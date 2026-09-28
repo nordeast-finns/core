@@ -9,6 +9,25 @@ on:
     branches: [ main ]
 
 jobs:
+  # Pull requests: JVM-mode tests (unit + packaged-app smoke tests), against Dev Services Postgres.
+  test:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: useblacksmith/checkout@v1
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: 25
+          distribution: temurin
+          cache: maven
+
+      - name: Test
+        run: ./mvnw verify -B -DskipITs=false
+
   build:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:

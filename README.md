@@ -1,79 +1,92 @@
 # core
 
-This project uses Quarkus, the Supersonic Subatomic Java Framework.
+The FINNS backend: Quarkus 3 (Java 25), Postgres, Flyway. Built as a native image and deployed to
+DigitalOcean from GHCR (`.github/workflows/ci.yml`).
 
-If you want to learn more about Quarkus, please visit its website: <https://quarkus.io/>.
+Today it serves the Admin Console's staff-access model. Customer-facing apps will use it too, so
+the domain word for console accounts is **staff**, never "user".
 
-## Running the application in dev mode
+## Developing
 
-You can run your application in dev mode that enables live coding using:
+Needs Docker, for Dev Services' Postgres.
 
-```shell script
-./mvnw quarkus:dev
+```sh
+./mvnw quarkus:dev        # http://localhost:8080, Dev UI at /q/dev/
+./mvnw verify -DskipITs=false   # unit tests + packaged-app smoke tests (what PRs run)
 ```
 
-> **_NOTE:_**  Quarkus now ships with a Dev UI, which is available in dev mode only at <http://localhost:8080/q/dev/>.
+- **Dev** runs `db/migration` plus the dev seed in `db/dev`: `thomas@nordeast.id` (ADMIN),
+  `admin@bla.com` (ADMIN) and `staff@bla.com` (STAFF). The dev database is kept between restarts.
+- **Tests** always start from an empty database, and each test resets the tables.
+- The dev and test admin-API tokens in `application.properties` are public and dev-only.
 
-## Packaging and running the application
+The dev database name is `finns`, so Dev Services never picks up a reused container from another
+project.
 
-The application can be packaged using:
+## Staff access
 
-```shell script
-./mvnw package
-```
+A `staff` row is someone allowed into the Admin Console, with role `STAFF` or `ADMIN`. `ADMIN`
+includes everything `STAFF` can do.
 
-It produces the `quarkus-run.jar` file in the `target/quarkus-app/` directory.
-Be aware that it’s not an _über-jar_ as the dependencies are copied into the `target/quarkus-app/lib/` directory.
+**Linking to JumpCloud**
 
-The application is now runnable using `java -jar target/quarkus-app/quarkus-run.jar`.
+- Admins add people by email.
+- The first successful sign-in links that email's row to the person's JumpCloud subject (`sub`).
+- From then on the row is found by `sub`, so a recreated JumpCloud account with the same email
+  gets `sub_mismatch` and is refused until an admin unlinks the row.
+- A disabled row is never linked, even if it's disabled while the sign-in is running.
 
-If you want to build an _über-jar_, execute the following command:
+**Rules** (enforced in `StaffApi`, under a transaction-scoped advisory lock taken by
+`Staff.lockAccessChanges()` before anything is read):
 
-```shell script
-./mvnw package -Dquarkus.package.jar.type=uber-jar
-```
+- Only an active ADMIN, identified by the `X-Finns-Actor-Sub` header, can list or change staff.
+- Nobody can change their own role, active flag or link, or delete themselves. They can edit their
+  own name and email.
+- At least one active ADMIN always remains.
+- Writes need `If-Match: "<version>"` from the `ETag`: a missing header gets 428, a stale one 412.
+- Every access change writes a `staff_event` row in the same transaction.
 
-The application, packaged as an _über-jar_, is now runnable using `java -jar target/*-runner.jar`.
+**Bootstrap:** at startup, while no active ADMIN exists, the emails in
+`finns.staff.bootstrap-admins` become active ADMINs. It's a no-op otherwise. An invalid email fails
+startup.
 
-## Creating a native executable
+## Admin API
 
-You can create a native executable using:
+Everything under `/api/v1/admin/` needs `Authorization: Bearer <FINNS_ADMIN_API_TOKEN>`,
+including unknown paths (401, empty body). The only caller is the Admin Console Worker, and the
+token is compared in constant time. Errors are RFC 9457 `application/problem+json`, with a stable
+`code` (see `ErrorCode`) and, for `invalid`, a `fields` map of field → error code. Clients own the
+wording.
 
-```shell script
-./mvnw package -Dnative
-```
+| Method and path | Purpose |
+|---|---|
+| `GET /api/v1/admin/staff-access/{sub}` | Per-request lookup: `{status: active\|disabled\|none, staffId?, role?}`. Read-only, and matches by linked `sub` only. |
+| `POST /api/v1/admin/staff-access/sign-ins` | Called once per sign-in with `{sub, email}`. Matches by `sub`, else by email (linking it), and records `last_sign_in_at`. May also answer `sub_mismatch`. If this answers `active`, the lookup of that `sub` does too. |
+| `GET /api/v1/admin/staff` | List: `q` (email/name substring), `role`, `active`, `page` (1-based), `size` (≤ 200). |
+| `GET /api/v1/admin/staff/{id}` | One staff member, with `ETag`. |
+| `GET /api/v1/admin/staff/{id}/events` | Audit events, newest first (`limit` ≤ 100). |
+| `POST /api/v1/admin/staff` | Create: `{email, displayName?, role, active}`. |
+| `PUT /api/v1/admin/staff/{id}` | Update (`If-Match`). |
+| `DELETE /api/v1/admin/staff/{id}/link` | Unlink the JumpCloud subject (`If-Match`). |
+| `DELETE /api/v1/admin/staff/{id}` | Delete (`If-Match`). The events are kept. |
 
-Or, if you don't have GraalVM installed, you can run the native executable build in a container using:
+`/q/health/ready` (which includes the database) is public, for the platform's health check.
 
-```shell script
-./mvnw package -Dnative -Dquarkus.native.container-build=true
-```
+## Configuration
 
-You can then execute your native executable with: `./target/core-1.0.0-SNAPSHOT-runner`
+| Env var | Meaning |
+|---|---|
+| `QUARKUS_DATASOURCE_JDBC_URL` | For example `jdbc:postgresql://<host>:25060/finns?sslmode=require` (DO Managed Postgres) |
+| `QUARKUS_DATASOURCE_USERNAME`, `QUARKUS_DATASOURCE_PASSWORD` | Database credentials |
+| `FINNS_ADMIN_API_TOKEN` | At least 32 characters (`openssl rand -base64 32`). Must equal the Worker's `CORE_API_TOKEN` secret. Startup fails if it's missing or short. |
+| `FINNS_STAFF_BOOTSTRAP_ADMINS` | Overrides the default bootstrap admin, `thomas@nordeast.id`. Comma-separated. |
 
-If you want to learn more about building native executables, please consult <https://quarkus.io/guides/maven-tooling>.
+Flyway migrates at startup, and Hibernate only validates the schema against the entities.
 
-## Related Guides
+**Rotating the token:** set the new value here, then as the Worker's secret, as close together as
+possible. The console returns 503 in between.
 
-- REST ([guide](https://quarkus.io/guides/rest)): Build RESTful web services and APIs using Jakarta REST (formerly JAX-RS)
-- REST Jackson ([guide](https://quarkus.io/guides/rest#json-serialisation)): Jackson serialization support for Quarkus REST. This extension is not compatible with the quarkus-resteasy extension, or any of the extensions that depend on it
-- Hibernate ORM with Panache ([guide](https://quarkus.io/guides/hibernate-orm-panache)): Simplified JPA/Hibernate data access layer with active record and repository patterns
-- JDBC Driver - PostgreSQL ([guide](https://quarkus.io/guides/datasource)): Connect to the PostgreSQL database via JDBC
+## Deploying
 
-## Provided Code
-
-### Hibernate ORM
-
-Create your first JPA entity
-
-[Related guide section...](https://quarkus.io/guides/hibernate-orm)
-
-
-[Related Hibernate with Panache section...](https://quarkus.io/guides/hibernate-orm-panache)
-
-
-### REST
-
-Easily start your REST Web Services
-
-[Related guide section...](https://quarkus.io/guides/getting-started-reactive#reactive-jax-rs-resources)
+A push to `main` builds the native image (running the smoke tests against it) and pushes
+`ghcr.io/<repo>:latest` and `:<sha>`. Pull requests run the JVM tests only.
