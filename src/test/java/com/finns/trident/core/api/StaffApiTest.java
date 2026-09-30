@@ -1,8 +1,8 @@
-package com.finnsbali.api;
+package com.finns.trident.core.api;
 
-import com.finnsbali.Fixtures;
-import com.finnsbali.model.Staff;
-import com.finnsbali.model.StaffEvent;
+import com.finns.trident.core.Fixtures;
+import com.finns.trident.core.model.Staff;
+import com.finns.trident.core.model.StaffEvent;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.response.Response;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,11 +14,11 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 
-import static com.finnsbali.Fixtures.as;
-import static com.finnsbali.Fixtures.staff;
-import static com.finnsbali.Fixtures.worker;
-import static com.finnsbali.model.Staff.Role.ADMIN;
-import static com.finnsbali.model.Staff.Role.STAFF;
+import static com.finns.trident.core.Fixtures.as;
+import static com.finns.trident.core.Fixtures.staff;
+import static com.finns.trident.core.Fixtures.worker;
+import static com.finns.trident.core.model.Staff.Role.ADMIN;
+import static com.finns.trident.core.model.Staff.Role.STAFF;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasSize;

@@ -1,4 +1,4 @@
-package com.finnsbali;
+package com.finns.trident.core;
 
 import java.util.Map;
 

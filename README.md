@@ -3,8 +3,9 @@
 The FINNS backend: Quarkus 3 (Java 25), Postgres, Flyway. Built as a native image and deployed to
 DigitalOcean from GHCR (`.github/workflows/ci.yml`).
 
-Today it serves the Admin Console's staff-access model. Customer-facing apps will use it too, so
-the domain word for console accounts is **staff**, never "user".
+Today it serves the Admin Console's staff-access model and a proof of concept of QR self-check-in
+(gates, rooms, lockers). Customer-facing apps use it too, so the domain word for console accounts is
+**staff**, never "user".
 
 ## Developing
 
@@ -18,7 +19,7 @@ Needs Docker, for Dev Services' Postgres.
 - **Dev** runs `db/migration` plus the dev seed in `db/dev`: `thomas@nordeast.id` (ADMIN),
   `admin@bla.com` (ADMIN) and `staff@bla.com` (STAFF). The dev database is kept between restarts.
 - **Tests** always start from an empty database, and each test resets the tables.
-- The dev and test admin-API tokens in `application.properties` are public and dev-only.
+- The dev and test admin-API and gate-API tokens in `application.properties` are public and dev-only.
 
 The dev database name is `finns`, so Dev Services never picks up a reused container from another
 project.
@@ -72,6 +73,34 @@ wording.
 
 `/q/health/ready` (which includes the database) is public, for the platform's health check.
 
+## Check-in (proof of concept)
+
+The customer app (`app`) gets a one-time QR code and shows it; a gate device (`gate`, a
+separate Android app) scans it and asks core whether to open.
+
+- A QR code is 32 random bytes, shown as `FINNS1:<base64url>`. Only its SHA-256 is stored.
+- It can be used once, and only for `finns.qr.ttl` (60 s) after it's issued. The app refreshes it
+  before it expires.
+- **QR codes carry no identity yet, and anyone can get one.** Nothing that controls a real door may
+  rely on them until customer sign-in and per-gate rules exist.
+
+| Method and path | Auth | Purpose |
+|---|---|---|
+| `POST /api/v1/app/qrs` | none | Issue a QR code: `201 {qr, expiresAt, ttlSeconds}`. Render `qr` verbatim; count down `ttlSeconds` on the device's clock. |
+| `POST /api/v1/gate/check-ins` | `Bearer <FINNS_GATE_API_TOKEN>` | `{gateId, qr}` → `200 {result: granted}` or `200 {result: denied, reason: expired\|used\|unknown\|malformed}`. `gateId` is `[a-z0-9-]{1,64}`; a bad `gateId` or missing field is 400 `malformed`. |
+
+Every scan is recorded in `check_in`. The prefix versions the QR format, so a signed QR code that
+gates can verify offline can be added later as `FINNS2:` without breaking deployed gates.
+
+Try it against `./mvnw quarkus:dev`:
+
+```sh
+QR=$(curl -s -X POST localhost:8080/api/v1/app/qrs | jq -r .qr)
+curl -s localhost:8080/api/v1/gate/check-ins -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer dev-only-gate-token-not-a-secret-01234' \
+  -d "{\"gateId\":\"dev-gate\",\"qr\":\"$QR\"}"
+```
+
 ## Configuration
 
 | Env var | Meaning |
@@ -79,6 +108,8 @@ wording.
 | `QUARKUS_DATASOURCE_JDBC_URL` | For example `jdbc:postgresql://<host>:25060/finns?sslmode=require` (DO Managed Postgres) |
 | `QUARKUS_DATASOURCE_USERNAME`, `QUARKUS_DATASOURCE_PASSWORD` | Database credentials |
 | `FINNS_ADMIN_API_TOKEN` | At least 32 characters (`openssl rand -base64 32`). Must equal the Worker's `CORE_API_TOKEN` secret. Startup fails if it's missing or short. |
+| `FINNS_GATE_API_TOKEN` | At least 32 characters. The gate devices' bearer token for `/api/v1/gate/*`; use a different value from `FINNS_ADMIN_API_TOKEN`. Startup fails if it's missing or short. |
+| `FINNS_CORS_ORIGINS` | Optional. Browser origins allowed to call core, as a Quarkus CORS origin list (`/regex/` entries allowed). Defaults to the app's `trident-app-web` Worker and its preview aliases on `workers.dev`. |
 | `FINNS_STAFF_BOOTSTRAP_ADMINS` | Overrides the default bootstrap admin, `thomas@nordeast.id`. Comma-separated. |
 
 Flyway migrates at startup, and Hibernate only validates the schema against the entities.

@@ -1,4 +1,4 @@
-package com.finnsbali.model;
+package com.finns.trident.core.model;
 
 import io.quarkus.hibernate.orm.panache.Panache;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;

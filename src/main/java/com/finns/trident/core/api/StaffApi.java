@@ -1,9 +1,9 @@
-package com.finnsbali.api;
+package com.finns.trident.core.api;
 
-import com.finnsbali.BusinessException;
-import com.finnsbali.model.Staff;
-import com.finnsbali.model.Staff.Role;
-import com.finnsbali.model.StaffEvent;
+import com.finns.trident.core.BusinessException;
+import com.finns.trident.core.model.Staff;
+import com.finns.trident.core.model.Staff.Role;
+import com.finns.trident.core.model.StaffEvent;
 import io.quarkus.panache.common.Parameters;
 import io.quarkus.panache.common.Sort;
 import io.quarkus.runtime.annotations.RegisterForReflection;
@@ -30,19 +30,19 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
-import static com.finnsbali.ErrorCode.EMAIL_TAKEN;
-import static com.finnsbali.ErrorCode.FORBIDDEN;
-import static com.finnsbali.ErrorCode.INVALID;
-import static com.finnsbali.ErrorCode.LAST_ADMIN;
-import static com.finnsbali.ErrorCode.MALFORMED;
-import static com.finnsbali.ErrorCode.NOT_FOUND;
-import static com.finnsbali.ErrorCode.PRECONDITION_REQUIRED;
-import static com.finnsbali.ErrorCode.SELF_CHANGE;
-import static com.finnsbali.ErrorCode.STALE;
-import static com.finnsbali.model.StaffEvent.Action.CREATED;
-import static com.finnsbali.model.StaffEvent.Action.DELETED;
-import static com.finnsbali.model.StaffEvent.Action.UNLINKED;
-import static com.finnsbali.model.StaffEvent.Action.UPDATED;
+import static com.finns.trident.core.ErrorCode.EMAIL_TAKEN;
+import static com.finns.trident.core.ErrorCode.FORBIDDEN;
+import static com.finns.trident.core.ErrorCode.INVALID;
+import static com.finns.trident.core.ErrorCode.LAST_ADMIN;
+import static com.finns.trident.core.ErrorCode.MALFORMED;
+import static com.finns.trident.core.ErrorCode.NOT_FOUND;
+import static com.finns.trident.core.ErrorCode.PRECONDITION_REQUIRED;
+import static com.finns.trident.core.ErrorCode.SELF_CHANGE;
+import static com.finns.trident.core.ErrorCode.STALE;
+import static com.finns.trident.core.model.StaffEvent.Action.CREATED;
+import static com.finns.trident.core.model.StaffEvent.Action.DELETED;
+import static com.finns.trident.core.model.StaffEvent.Action.UNLINKED;
+import static com.finns.trident.core.model.StaffEvent.Action.UPDATED;
 import static jakarta.ws.rs.core.HttpHeaders.IF_MATCH;
 
 /**

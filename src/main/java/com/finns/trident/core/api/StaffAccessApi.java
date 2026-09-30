@@ -1,10 +1,10 @@
-package com.finnsbali.api;
+package com.finns.trident.core.api;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonValue;
-import com.finnsbali.BusinessException;
-import com.finnsbali.model.Staff;
-import com.finnsbali.model.StaffEvent;
+import com.finns.trident.core.BusinessException;
+import com.finns.trident.core.model.Staff;
+import com.finns.trident.core.model.StaffEvent;
 import io.quarkus.hibernate.orm.panache.Panache;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 import jakarta.transaction.Transactional;
@@ -19,8 +19,8 @@ import java.util.Locale;
 import java.util.Optional;
 
 import static com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL;
-import static com.finnsbali.ErrorCode.MALFORMED;
-import static com.finnsbali.model.StaffEvent.Action.LINKED;
+import static com.finns.trident.core.ErrorCode.MALFORMED;
+import static com.finns.trident.core.model.StaffEvent.Action.LINKED;
 
 /**
  * What a JumpCloud subject may do in the Admin Console. The Worker calls {@link #lookup} on every

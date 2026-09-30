@@ -1,9 +1,9 @@
-package com.finnsbali.api;
+package com.finns.trident.core.api;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.finnsbali.BusinessException;
-import com.finnsbali.ErrorCode;
+import com.finns.trident.core.BusinessException;
+import com.finns.trident.core.ErrorCode;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 import jakarta.persistence.OptimisticLockException;
 import jakarta.ws.rs.WebApplicationException;
@@ -16,10 +16,10 @@ import org.jboss.logging.Logger;
 import java.util.Map;
 
 import static com.fasterxml.jackson.annotation.JsonInclude.Include.NON_EMPTY;
-import static com.finnsbali.ErrorCode.EMAIL_TAKEN;
-import static com.finnsbali.ErrorCode.MALFORMED;
-import static com.finnsbali.ErrorCode.NOT_FOUND;
-import static com.finnsbali.ErrorCode.STALE;
+import static com.finns.trident.core.ErrorCode.EMAIL_TAKEN;
+import static com.finns.trident.core.ErrorCode.MALFORMED;
+import static com.finns.trident.core.ErrorCode.NOT_FOUND;
+import static com.finns.trident.core.ErrorCode.STALE;
 
 /**
  * Turns every exception into RFC 9457 problem details carrying a stable {@code code}. Anything not

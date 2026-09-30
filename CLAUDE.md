@@ -4,8 +4,8 @@ See README.md for running, configuration and the Admin API.
 
 ## Conventions
 
-- **Package by function**: `com.finnsbali.model` (Panache entities, their finders and the rules
-  they enforce), `com.finnsbali.api` (JAX-RS resources named `XxxApi`, with their request and
+- **Package by function**: `com.finns.trident.core.model` (Panache entities, their finders and the rules
+  they enforce), `com.finns.trident.core.api` (JAX-RS resources named `XxxApi`, with their request and
   response records nested inside), and root-level cross-cutting classes (`ErrorCode`,
   `BusinessException`, `FinnsConfig`, startup jobs). Add sub-packages only once a boundary is
   clear.
@@ -36,6 +36,23 @@ See README.md for running, configuration and the Admin API.
   is conditional (active, unlinked, subject not linked elsewhere); on a miss, sign-in re-reads
   once instead of taking the lock.
 - Never log the token, request headers or bodies.
+
+## Gate API and check-in rules
+
+- Everything under `/api/v1/gate/` is authenticated by `GateApiFilter` (the gate devices' bearer
+  token, one shared token for now) before routing. `/api/v1/app/` is the customer app's API and is
+  unauthenticated for now.
+- A QR code's text is versioned by prefix (`Qr.V1_PREFIX`, `FINNS1:`). Never change what an
+  existing prefix means: add a new prefix (a signed `FINNS2:` QR code a gate can verify offline is the
+  expected next one) so deployed gates and apps keep working. Clients treat the text as opaque.
+- Only a QR code's token hash is stored. Never log `qr`, tokens or scan bodies.
+- `Qr.consume` is one conditional update, so concurrent scans of one QR code can't both be granted.
+  Keep it that way rather than read-then-write.
+- A denied scan is a normal outcome: 200 with `result`/`reason`, and a `check_in` row. Only a
+  malformed request is a problem response. Every scan is recorded, granted or not, in the same
+  transaction as the decision.
+- `check_in.source`, `scanned_at` and `recorded_at` exist for check-ins that gates decide offline and
+  upload later; online check-ins set `ONLINE` and equal times.
 
 ## Tests
 

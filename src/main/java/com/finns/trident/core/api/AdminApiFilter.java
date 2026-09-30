@@ -1,15 +1,14 @@
-package com.finnsbali.api;
+package com.finns.trident.core.api;
 
-import com.finnsbali.FinnsConfig;
+import com.finns.trident.core.FinnsConfig;
+import com.finns.trident.core.Hashes;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.core.Response;
 import org.jboss.logging.Logger;
 import org.jboss.resteasy.reactive.server.ServerRequestFilter;
 
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 
 import static jakarta.ws.rs.core.HttpHeaders.AUTHORIZATION;
 import static jakarta.ws.rs.core.Response.Status.UNAUTHORIZED;
@@ -31,7 +30,7 @@ public class AdminApiFilter {
 
 	@Inject
 	public AdminApiFilter(FinnsConfig config) {
-		expected = sha256("Bearer " + config.adminApi().token());
+		expected = Hashes.sha256("Bearer " + config.adminApi().token());
 	}
 
 	@ServerRequestFilter(preMatching = true)
@@ -41,18 +40,10 @@ public class AdminApiFilter {
 
 		String header = ctx.getHeaderString(AUTHORIZATION);
 		// Comparing fixed-length digests keeps the check constant-time, including for length.
-		if (header != null && MessageDigest.isEqual(expected, sha256(header))) {
+		if (header != null && MessageDigest.isEqual(expected, Hashes.sha256(header))) {
 			return null;
 		}
 		logger.warnf("admin_api.bad_token method=%s path=%s", ctx.getMethod(), path);
 		return Response.status(UNAUTHORIZED).build();
-	}
-
-	private static byte[] sha256(String s) {
-		try {
-			return MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8));
-		} catch (NoSuchAlgorithmException e) {
-			throw new IllegalStateException(e);
-		}
 	}
 }

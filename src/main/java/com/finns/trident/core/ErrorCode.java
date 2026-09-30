@@ -1,4 +1,4 @@
-package com.finnsbali;
+package com.finns.trident.core;
 
 /**
  * Every business error the API can return. {@code code} is the stable wire value clients switch

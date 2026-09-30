@@ -1,6 +1,6 @@
-package com.finnsbali.api;
+package com.finns.trident.core.api;
 
-import com.finnsbali.Fixtures;
+import com.finns.trident.core.Fixtures;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.RestAssured;
 import org.junit.jupiter.api.Test;

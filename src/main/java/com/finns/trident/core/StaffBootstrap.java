@@ -1,7 +1,7 @@
-package com.finnsbali;
+package com.finns.trident.core;
 
-import com.finnsbali.model.Staff;
-import com.finnsbali.model.StaffEvent;
+import com.finns.trident.core.model.Staff;
+import com.finns.trident.core.model.StaffEvent;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
@@ -11,7 +11,7 @@ import org.jboss.logging.Logger;
 
 import java.util.List;
 
-import static com.finnsbali.model.StaffEvent.Action.BOOTSTRAPPED;
+import static com.finns.trident.core.model.StaffEvent.Action.BOOTSTRAPPED;
 
 /**
  * Makes sure someone can administer staff: while no active ADMIN exists, the configured emails

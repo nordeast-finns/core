@@ -1,6 +1,6 @@
-package com.finnsbali.model;
+package com.finns.trident.core.model;
 
-import com.finnsbali.Fixtures;
+import com.finns.trident.core.Fixtures;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.api.BeforeEach;
@@ -8,8 +8,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
-import static com.finnsbali.Fixtures.staff;
-import static com.finnsbali.model.Staff.Role.STAFF;
+import static com.finns.trident.core.Fixtures.staff;
+import static com.finns.trident.core.model.Staff.Role.STAFF;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
