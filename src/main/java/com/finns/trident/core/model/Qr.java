@@ -31,8 +31,6 @@ public class Qr extends PanacheEntityBase {
 	/** Unpadded base64url length of {@link #TOKEN_BYTES}. */
 	static final int TOKEN_CHARS = 43;
 
-	private static final SecureRandom RANDOM = new SecureRandom();
-
 	/** Generated here rather than by the database, so a future signed QR code can carry its own id. */
 	@Id
 	public UUID id;
@@ -63,7 +61,9 @@ public class Qr extends PanacheEntityBase {
 
 	public static Issued issue(Duration ttl, Instant now) {
 		byte[] token = new byte[TOKEN_BYTES];
-		RANDOM.nextBytes(token);
+		// Not a static field: native images initialise classes at build time, which would bake the
+		// seed into the image.
+		new SecureRandom().nextBytes(token);
 
 		Qr qr = new Qr();
 		qr.id = UUID.randomUUID();
