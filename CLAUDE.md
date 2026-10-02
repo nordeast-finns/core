@@ -13,7 +13,8 @@ See README.md for running, configuration and the Admin API.
   Add a service only when logic is shared by several callers and can't sit on an entity.
 - **Never use the word "user".** `core` serves both the Admin Console and customer-facing apps, so
   "user" is ambiguous. Admin Console accounts are **staff** (an admin is a staff member with role
-  `ADMIN`); the person making a request is the **actor**.
+  `ADMIN`); people using the customer-facing apps are **customers**; the person making a request is
+  the **actor**.
 - **Formatting:** tabs, and braces on the same line.
 - **Errors:** throw `BusinessException(ErrorCode.X)`. `GenericExceptionMapper` turns it into
   `application/problem+json`. Add new codes to `ErrorCode` with their HTTP status. Never put
@@ -37,11 +38,23 @@ See README.md for running, configuration and the Admin API.
   once instead of taking the lock.
 - Never log the token, request headers or bodies.
 
+## Customer API rules
+
+- Everything under `/api/v1/app/` is the customer app's API. Quarkus OIDC checks the customer's
+  Keycloak access token before routing (`quarkus.http.auth.permission.app`), so new endpoints there
+  are protected by default. Auth isn't proactive, so the admin and gate tokens never reach OIDC;
+  keep it that way.
+- Identify the customer by the token's subject only, through `Customer.ofSubject`. Never by email
+  or name: Keycloak owns those, and core doesn't store them.
+- Tests sign customer tokens with `Fixtures.customer(sub)` / `Fixtures.customerToken` (test-only key
+  in `src/test/resources`). Never add a production key or real token to the repo.
+
 ## Gate API and check-in rules
 
 - Everything under `/api/v1/gate/` is authenticated by `GateApiFilter` (the gate devices' bearer
-  token, one shared token for now) before routing. `/api/v1/app/` is the customer app's API and is
-  unauthenticated for now.
+  token, one shared token for now) before routing.
+- A QR code is issued to one customer, and every `check_in` row records that customer (null when
+  the scan matched no QR code).
 - A QR code's text is versioned by prefix (`Qr.V1_PREFIX`, `FINNS1:`). Never change what an
   existing prefix means: add a new prefix (a signed `FINNS2:` QR code a gate can verify offline is the
   expected next one) so deployed gates and apps keep working. Clients treat the text as opaque.

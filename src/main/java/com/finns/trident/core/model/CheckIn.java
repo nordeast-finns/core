@@ -13,7 +13,7 @@ import java.util.UUID;
 import static jakarta.persistence.EnumType.STRING;
 import static jakarta.persistence.GenerationType.IDENTITY;
 
-/** One scan a gate reported, granted or denied. */
+/** One scan a gate reported, granted or denied, and whose QR code it was. */
 @Entity
 public class CheckIn extends PanacheEntityBase {
 	public enum Result {
@@ -45,6 +45,9 @@ public class CheckIn extends PanacheEntityBase {
 	/** Null when the scan matched no QR code. */
 	public UUID qrId;
 
+	/** The customer the QR code was issued to. Null when the scan matched no QR code. */
+	public Long customerId;
+
 	@Column(nullable = false)
 	public String gateId;
 
@@ -68,13 +71,14 @@ public class CheckIn extends PanacheEntityBase {
 	@Column(nullable = false)
 	public Instant recordedAt;
 
-	/** Records an online check-in; {@code reason} null means granted. */
-	public static void recordOnline(UUID qrId, String gateId, Reason reason, Instant now) {
+	/** Records an online check-in of a scan that ended in {@code outcome}. */
+	public static void recordOnline(Qr.Outcome outcome, String gateId, Instant now) {
 		CheckIn c = new CheckIn();
-		c.qrId = qrId;
+		c.qrId = outcome.qrId();
+		c.customerId = outcome.customerId();
 		c.gateId = gateId;
-		c.result = reason == null ? Result.GRANTED : Result.DENIED;
-		c.reason = reason;
+		c.result = outcome.granted() ? Result.GRANTED : Result.DENIED;
+		c.reason = outcome.denied();
 		c.source = Source.ONLINE;
 		c.scannedAt = now;
 		c.recordedAt = now;

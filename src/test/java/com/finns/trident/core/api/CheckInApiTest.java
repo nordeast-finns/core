@@ -2,6 +2,7 @@ package com.finns.trident.core.api;
 
 import com.finns.trident.core.Fixtures;
 import com.finns.trident.core.model.CheckIn;
+import com.finns.trident.core.model.Customer;
 import com.finns.trident.core.model.Qr;
 import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,7 +15,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static io.restassured.RestAssured.given;
+import static com.finns.trident.core.Fixtures.CUSTOMER_SUB;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.hasKey;
@@ -32,8 +33,9 @@ class CheckInApiTest {
 	}
 
 	@Test
-	void grantsAFreshQrOnce() {
-		String qr = given().post("/api/v1/app/qrs").then().statusCode(201).extract().path("qr");
+	void grantsAFreshQrOnceAndRecordsWhose() {
+		String qr = Fixtures.customer(CUSTOMER_SUB).post("/api/v1/app/qrs").then().statusCode(201).extract().path("qr");
+		Customer customer = Fixtures.customers().getFirst();
 
 		scan(qr).then().statusCode(200).body("result", equalTo("granted")).body("$", not(hasKey("reason")));
 		scan(qr).then().statusCode(200).body("result", equalTo("denied")).body("reason", equalTo("used"));
@@ -47,6 +49,7 @@ class CheckInApiTest {
 		assertEquals(1, checkIns.stream().filter(c -> c.result == CheckIn.Result.GRANTED).count());
 		checkIns.forEach(c -> {
 			assertEquals(stored.id, c.qrId);
+			assertEquals(customer.id, c.customerId);
 			assertEquals(GATE, c.gateId);
 			assertEquals(CheckIn.Source.ONLINE, c.source);
 		});
@@ -54,17 +57,22 @@ class CheckInApiTest {
 
 	@Test
 	void deniesAnExpiredQr() {
-		String qr = Fixtures.qr(Instant.now().minusSeconds(1), null);
+		Customer customer = Fixtures.customerRow(CUSTOMER_SUB);
+		String qr = Fixtures.qr(customer.id, Instant.now().minusSeconds(1), null);
 		scan(qr).then().statusCode(200).body("result", equalTo("denied")).body("reason", equalTo("expired"));
 		assertNull(Fixtures.qrs().getFirst().usedAt);
-		assertEquals(CheckIn.Reason.EXPIRED, Fixtures.checkIns().getFirst().reason);
+		CheckIn c = Fixtures.checkIns().getFirst();
+		assertEquals(CheckIn.Reason.EXPIRED, c.reason);
+		assertEquals(customer.id, c.customerId);
 	}
 
 	@Test
 	void deniesAUsedQrEvenBeforeItExpires() {
-		String qr = Fixtures.qr(Instant.now().plusSeconds(30), Instant.now().minusSeconds(5));
+		Customer customer = Fixtures.customerRow(CUSTOMER_SUB);
+		String qr = Fixtures.qr(customer.id, Instant.now().plusSeconds(30), Instant.now().minusSeconds(5));
 		scan(qr).then().statusCode(200).body("reason", equalTo("used"));
 		assertEquals("earlier-gate", Fixtures.qrs().getFirst().usedGate);
+		assertEquals(customer.id, Fixtures.checkIns().getFirst().customerId);
 	}
 
 	@Test
@@ -73,6 +81,7 @@ class CheckInApiTest {
 				.body("result", equalTo("denied")).body("reason", equalTo("unknown"));
 		CheckIn c = Fixtures.checkIns().getFirst();
 		assertNull(c.qrId);
+		assertNull(c.customerId);
 		assertEquals(CheckIn.Reason.UNKNOWN, c.reason);
 	}
 
@@ -81,7 +90,9 @@ class CheckInApiTest {
 			"finns1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "FINNS1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+"})
 	void deniesAndRecordsTextThatIsNotAQr(String qr) {
 		scan(qr).then().statusCode(200).body("result", equalTo("denied")).body("reason", equalTo("malformed"));
-		assertEquals(CheckIn.Reason.MALFORMED, Fixtures.checkIns().getFirst().reason);
+		CheckIn c = Fixtures.checkIns().getFirst();
+		assertEquals(CheckIn.Reason.MALFORMED, c.reason);
+		assertNull(c.customerId);
 	}
 
 	@ParameterizedTest

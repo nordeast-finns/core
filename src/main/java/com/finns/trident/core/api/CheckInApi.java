@@ -57,14 +57,15 @@ public class CheckInApi {
 		Optional<byte[]> token = Qr.decode(scan.qr());
 		Qr.Outcome outcome = token.isPresent()
 				? Qr.consume(token.get(), scan.gateId(), now)
-				: new Qr.Outcome(Reason.MALFORMED, null);
-		CheckIn.recordOnline(outcome.qrId(), scan.gateId(), outcome.denied(), now);
+				: new Qr.Outcome(Reason.MALFORMED, null, null);
+		CheckIn.recordOnline(outcome, scan.gateId(), now);
 
 		if (outcome.granted()) {
-			logger.infof("check_in.granted qrId=%s gateId=%s", outcome.qrId(), scan.gateId());
+			logger.infof("check_in.granted qrId=%s customerId=%s gateId=%s", outcome.qrId(), outcome.customerId(), scan.gateId());
 			return Decision.GRANTED;
 		}
-		logger.infof("check_in.denied reason=%s qrId=%s gateId=%s", outcome.denied(), outcome.qrId(), scan.gateId());
+		logger.infof("check_in.denied reason=%s qrId=%s customerId=%s gateId=%s", outcome.denied(), outcome.qrId(),
+				outcome.customerId(), scan.gateId());
 		return Decision.denied(outcome.denied());
 	}
 }

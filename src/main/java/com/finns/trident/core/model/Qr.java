@@ -15,8 +15,8 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * A one-time check-in QR code. The customer app shows {@link Issued#qr} as a QR code; a gate sends it
- * back and {@link #consume} decides. Only the token's hash is stored.
+ * A one-time check-in QR code, issued to one customer. The customer app shows {@link Issued#qr} as a
+ * QR code; a gate sends it back and {@link #consume} decides. Only the token's hash is stored.
  * <p>
  * The QR text is versioned by its prefix: {@value #V1_PREFIX} is an opaque token that only core can
  * check. A later version (such as a signed QR code a gate can verify offline) gets its own prefix, so
@@ -36,6 +36,9 @@ public class Qr extends PanacheEntityBase {
 	public UUID id;
 
 	@Column(nullable = false)
+	public Long customerId;
+
+	@Column(nullable = false)
 	public byte[] tokenHash;
 
 	@Column(nullable = false)
@@ -52,14 +55,14 @@ public class Qr extends PanacheEntityBase {
 	public record Issued(UUID id, String qr, Instant expiresAt) {
 	}
 
-	/** {@code qrId} is null when the token matches no QR code. */
-	public record Outcome(Reason denied, UUID qrId) {
+	/** {@code qrId} and {@code customerId} are null when the token matches no QR code. */
+	public record Outcome(Reason denied, UUID qrId, Long customerId) {
 		public boolean granted() {
 			return denied == null;
 		}
 	}
 
-	public static Issued issue(Duration ttl, Instant now) {
+	public static Issued issue(long customerId, Duration ttl, Instant now) {
 		byte[] token = new byte[TOKEN_BYTES];
 		// Not a static field: native images initialise classes at build time, which would bake the
 		// seed into the image.
@@ -67,6 +70,7 @@ public class Qr extends PanacheEntityBase {
 
 		Qr qr = new Qr();
 		qr.id = UUID.randomUUID();
+		qr.customerId = customerId;
 		qr.tokenHash = Hashes.sha256(token);
 		qr.issuedAt = now;
 		qr.expiresAt = now.plus(ttl);
@@ -82,11 +86,11 @@ public class Qr extends PanacheEntityBase {
 		byte[] hash = Hashes.sha256(token);
 		int updated = update("usedAt = ?1, usedGate = ?2 where tokenHash = ?3 and usedAt is null and expiresAt > ?1",
 				now, gateId, hash);
-		Optional<Qr> qr = find("tokenHash", hash).firstResultOptional();
-		if (qr.isEmpty()) return new Outcome(Reason.UNKNOWN, null);
-		UUID id = qr.get().id;
-		if (updated == 1) return new Outcome(null, id);
-		return new Outcome(qr.get().usedAt != null ? Reason.USED : Reason.EXPIRED, id);
+		Optional<Qr> found = find("tokenHash", hash).firstResultOptional();
+		if (found.isEmpty()) return new Outcome(Reason.UNKNOWN, null, null);
+		Qr qr = found.get();
+		if (updated == 1) return new Outcome(null, qr.id, qr.customerId);
+		return new Outcome(qr.usedAt != null ? Reason.USED : Reason.EXPIRED, qr.id, qr.customerId);
 	}
 
 	public static String encode(byte[] token) {

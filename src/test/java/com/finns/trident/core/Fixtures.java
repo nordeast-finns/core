@@ -1,16 +1,22 @@
 package com.finns.trident.core;
 
 import com.finns.trident.core.model.CheckIn;
+import com.finns.trident.core.model.Customer;
 import com.finns.trident.core.model.Qr;
 import com.finns.trident.core.model.Staff;
 import com.finns.trident.core.model.StaffEvent;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.restassured.specification.RequestSpecification;
+import io.smallrye.jwt.build.Jwt;
+import io.smallrye.jwt.build.JwtClaimsBuilder;
+import io.smallrye.jwt.util.KeyUtils;
 
+import java.security.PrivateKey;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.UnaryOperator;
 
 import static com.finns.trident.core.api.AdminApiFilter.ACTOR_SUB_HEADER;
 import static io.restassured.RestAssured.given;
@@ -23,6 +29,12 @@ public final class Fixtures {
 
 	/** Matches {@code %test.finns.gate-api.token}. */
 	public static final String GATE_TOKEN = "test-only-gate-token-not-a-secret-0123";
+
+	/** Matches {@code %test.quarkus.oidc.token.issuer}. */
+	public static final String ISSUER = "https://auth.test/realms/finns";
+
+	/** A Keycloak subject, as the customer app's tokens carry it. */
+	public static final String CUSTOMER_SUB = "6c1f7a52-8a77-4a43-9f43-6f5e0b6f2c11";
 
 	private Fixtures() {
 	}
@@ -37,6 +49,33 @@ public final class Fixtures {
 		return worker().header(ACTOR_SUB_HEADER, sub);
 	}
 
+	/** A request the customer app would make for the customer with Keycloak subject {@code sub}. */
+	public static RequestSpecification customer(String sub) {
+		return given().auth().oauth2(customerToken(sub, UnaryOperator.identity())).contentType(JSON);
+	}
+
+	/**
+	 * An access token as Keycloak issues it to the customer app, signed with the test key.
+	 * {@code tweak} changes it, for tests of tokens core must refuse.
+	 */
+	public static String customerToken(String sub, UnaryOperator<JwtClaimsBuilder> tweak) {
+		JwtClaimsBuilder claims = Jwt.issuer(ISSUER)
+				.subject(sub)
+				.audience("account")
+				.claim("azp", "trident-app")
+				.claim("typ", "Bearer")
+				.expiresIn(300);
+		return tweak.apply(claims).sign(signingKey());
+	}
+
+	private static PrivateKey signingKey() {
+		try {
+			return KeyUtils.readPrivateKey("/customer-token-key.pem");
+		} catch (Exception e) {
+			throw new IllegalStateException(e);
+		}
+	}
+
 	/** A request a gate device would make: authenticated, JSON. */
 	public static RequestSpecification gate() {
 		return given().header("Authorization", "Bearer " + GATE_TOKEN).contentType(JSON);
@@ -46,6 +85,7 @@ public final class Fixtures {
 		QuarkusTransaction.requiringNew().run(() -> {
 			CheckIn.deleteAll();
 			Qr.deleteAll();
+			Customer.deleteAll();
 			StaffEvent.deleteAll();
 			Staff.deleteAll();
 		});
@@ -74,13 +114,22 @@ public final class Fixtures {
 		return QuarkusTransaction.requiringNew().call(() -> StaffEvent.latestFor(staffId, 100));
 	}
 
-	/** Inserts a QR code directly and returns its QR text; {@code usedAt} null means unused. */
-	public static String qr(Instant expiresAt, Instant usedAt) {
+	/** Inserts a customer directly. */
+	public static Customer customerRow(String sub) {
+		return QuarkusTransaction.requiringNew().call(() -> Customer.ofSubject(sub, Instant.now()));
+	}
+
+	/**
+	 * Inserts a QR code issued to the customer {@code customerId} directly and returns its QR text;
+	 * {@code usedAt} null means unused.
+	 */
+	public static String qr(long customerId, Instant expiresAt, Instant usedAt) {
 		byte[] token = new byte[32];
 		new SecureRandom().nextBytes(token);
 		QuarkusTransaction.requiringNew().run(() -> {
 			Qr p = new Qr();
 			p.id = UUID.randomUUID();
+			p.customerId = customerId;
 			p.tokenHash = Hashes.sha256(token);
 			p.issuedAt = expiresAt.minusSeconds(60);
 			p.expiresAt = expiresAt;
@@ -97,5 +146,9 @@ public final class Fixtures {
 
 	public static List<Qr> qrs() {
 		return QuarkusTransaction.requiringNew().call(() -> Qr.<Qr>listAll());
+	}
+
+	public static List<Customer> customers() {
+		return QuarkusTransaction.requiringNew().call(() -> Customer.<Customer>listAll());
 	}
 }

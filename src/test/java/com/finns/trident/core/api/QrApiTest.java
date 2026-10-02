@@ -1,20 +1,26 @@
 package com.finns.trident.core.api;
 
 import com.finns.trident.core.Fixtures;
+import com.finns.trident.core.model.Customer;
 import com.finns.trident.core.model.Qr;
 import io.quarkus.test.junit.QuarkusTest;
+import io.smallrye.jwt.build.JwtClaimsBuilder;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
+import java.util.function.UnaryOperator;
 
+import static com.finns.trident.core.Fixtures.CUSTOMER_SUB;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.matchesPattern;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -26,15 +32,18 @@ class QrApiTest {
 	}
 
 	@Test
-	void issuesAOneTimeQr() {
-		String qr = given().post("/api/v1/app/qrs").then().statusCode(201)
+	void issuesAOneTimeQrToTheCustomer() {
+		String qr = Fixtures.customer(CUSTOMER_SUB).post("/api/v1/app/qrs").then().statusCode(201)
 				.body("qr", matchesPattern("FINNS1:[A-Za-z0-9_-]{43}"))
 				.body("ttlSeconds", equalTo(60))
 				.extract().path("qr");
 
+		Customer customer = Fixtures.customers().getFirst();
+		assertEquals(CUSTOMER_SUB, customer.keycloakSub);
 		List<Qr> rows = Fixtures.qrs();
 		assertEquals(1, rows.size());
 		Qr row = rows.getFirst();
+		assertEquals(customer.id, row.customerId);
 		assertNull(row.usedAt);
 		assertEquals(Duration.ofSeconds(60), Duration.between(row.issuedAt, row.expiresAt));
 		assertTrue(row.expiresAt.isAfter(Instant.now()));
@@ -44,18 +53,66 @@ class QrApiTest {
 	}
 
 	@Test
-	void issuesADifferentQrEachTime() {
-		String a = given().post("/api/v1/app/qrs").then().extract().path("qr");
-		String b = given().post("/api/v1/app/qrs").then().extract().path("qr");
-		assertTrue(!a.equals(b));
+	void createsEachCustomerOnce() {
+		String a = Fixtures.customer(CUSTOMER_SUB).post("/api/v1/app/qrs").then().statusCode(201).extract().path("qr");
+		String b = Fixtures.customer(CUSTOMER_SUB).post("/api/v1/app/qrs").then().statusCode(201).extract().path("qr");
+		Fixtures.customer("another-subject").post("/api/v1/app/qrs").then().statusCode(201);
+
+		assertNotEquals(a, b);
+		assertEquals(2, Fixtures.customers().size());
+		long first = Fixtures.customers().stream().filter(c -> c.keycloakSub.equals(CUSTOMER_SUB)).findFirst().orElseThrow().id;
+		assertEquals(2, Fixtures.qrs().stream().filter(q -> q.customerId == first).count());
+	}
+
+	@Test
+	void refusesARequestWithoutAToken() {
+		given().post("/api/v1/app/qrs").then().statusCode(401);
+		// Unknown paths too, so callers can't probe which endpoints exist.
+		given().get("/api/v1/app/nothing-here").then().statusCode(401);
+		given().get("/api/v1/app").then().statusCode(401);
+		assertEquals(0, Fixtures.qrs().size());
+		assertEquals(0, Fixtures.customers().size());
+	}
+
+	@Test
+	void refusesTokensNotIssuedToTheCustomerApp() {
+		refused(c -> c.issuer("https://elsewhere.test/realms/finns"));
+		refused(c -> c.expiresAt(Instant.now().minusSeconds(120)));
+		// Another client of the realm, and an ID token rather than an access token.
+		refused(c -> c.claim("azp", "account-console"));
+		refused(c -> c.claim("typ", "ID"));
+		refused(c -> c.remove("sub"));
+		assertEquals(0, Fixtures.customers().size());
+	}
+
+	@Test
+	void refusesATamperedToken() {
+		String token = Fixtures.customerToken(CUSTOMER_SUB, UnaryOperator.identity());
+		String[] parts = token.split("\\.");
+		// Same header and claims, signature of a different token.
+		String other = Fixtures.customerToken("someone-else", UnaryOperator.identity()).split("\\.")[2];
+		given().auth().oauth2(parts[0] + "." + parts[1] + "." + other).post("/api/v1/app/qrs").then().statusCode(401);
+	}
+
+	@Test
+	void refusesTheOtherApisTokens() {
+		given().auth().oauth2(Fixtures.GATE_TOKEN).post("/api/v1/app/qrs").then().statusCode(401);
+		given().auth().oauth2(Fixtures.TOKEN).post("/api/v1/app/qrs").then().statusCode(401);
+	}
+
+	@Test
+	void doesNotAcceptACustomerTokenOnTheGateApi() {
+		Fixtures.customer(CUSTOMER_SUB).body(Map.of("gateId", "gym", "qr", "x"))
+				.post("/api/v1/gate/check-ins").then().statusCode(401);
 	}
 
 	@Test
 	void allowsTheAppsWebOrigin() {
 		given().header("Origin", "http://localhost:5173")
 				.header("Access-Control-Request-Method", "POST")
-				.header("Access-Control-Request-Headers", "content-type")
+				.header("Access-Control-Request-Headers", "authorization,content-type")
 				.options("/api/v1/app/qrs").then()
+				.statusCode(200)
 				.header("Access-Control-Allow-Origin", "http://localhost:5173");
 	}
 
@@ -65,5 +122,9 @@ class QrApiTest {
 				.header("Access-Control-Request-Method", "POST")
 				.options("/api/v1/app/qrs").then()
 				.header("Access-Control-Allow-Origin", nullValue());
+	}
+
+	private static void refused(UnaryOperator<JwtClaimsBuilder> tweak) {
+		given().auth().oauth2(Fixtures.customerToken(CUSTOMER_SUB, tweak)).post("/api/v1/app/qrs").then().statusCode(401);
 	}
 }
