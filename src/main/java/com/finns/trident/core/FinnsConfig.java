@@ -4,6 +4,7 @@ import io.smallrye.config.ConfigMapping;
 import io.smallrye.config.WithDefault;
 import jakarta.validation.constraints.Size;
 
+import java.net.URI;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
@@ -17,6 +18,8 @@ public interface FinnsConfig {
 	AdminApi adminApi();
 
 	GateApi gateApi();
+
+	Booking booking();
 
 	Staff staff();
 
@@ -32,6 +35,23 @@ public interface FinnsConfig {
 		/** Bearer token every gate device sends on {@code /api/v1/gate/*}. One shared token for now. */
 		@Size(min = 32)
 		String token();
+	}
+
+	interface Booking {
+		/** Bearer token the booking website sends on every {@code /api/v1/booking/*} call. */
+		@Size(min = 32)
+		String apiToken();
+
+		/** The booking website's origin, where core tells it a customer signed out of the app. */
+		URI url();
+
+		/** Bearer token core sends to the booking website's session-revoke endpoint. */
+		@Size(min = 32)
+		String revokeToken();
+
+		/** How long a handoff code can be redeemed. */
+		@WithDefault("60s")
+		Duration handoffTtl();
 	}
 
 	interface Staff {

@@ -19,7 +19,7 @@ Needs Docker, for Dev Services' Postgres.
 - **Dev** runs `db/migration` plus the dev seed in `db/dev`: `thomas@nordeast.id` (ADMIN),
   `admin@bla.com` (ADMIN) and `staff@bla.com` (STAFF). The dev database is kept between restarts.
 - **Tests** always start from an empty database, and each test resets the tables.
-- The dev and test admin-API and gate-API tokens in `application.properties` are public and dev-only.
+- The dev and test admin-API, gate-API and booking tokens in `application.properties` are public and dev-only.
 - **Dev** checks customer tokens against the real test realm
   (`https://test-auth.finnsbeachclub.com/realms/finns`), so the `app` can sign in and call a local core.
   **Tests** sign their own with `src/test/resources/customer-token-key.pem`, a test-only key.
@@ -92,6 +92,36 @@ paths (401, empty body), checked before routing. Core accepts only access tokens
 Keycloak isn't needed to start: if it's unreachable, core starts anyway and connects on the first
 customer request (which fails until Keycloak is back).
 
+## Booking website handoff
+
+A customer signed in to the app shouldn't sign in again on the booking website (`booking`). The app
+asks core for a one-time **handoff code**, opens the website with it, and the website redeems it with
+core. A handoff signs the customer in to a *short, identify-only* website session: it is not a token,
+and the website never receives an access token.
+
+- A code is 32 random bytes (base64url, 43 characters). Only its SHA-256 is stored, with the customer,
+  the app's Keycloak session (`sid`) and the customer's display name and email, which exist only so the
+  website can say who it is about to sign in. Redeeming or revoking a code clears the name and email.
+- It can be redeemed once, within `finns.booking.handoff-ttl` (60 s). Redemption is one conditional
+  update, so two requests can't both win. Anything else (unknown, malformed, used, expired, revoked) is
+  the same `404 not_found`.
+- A customer can have 5 codes issued per minute (`429 rate_limited`), counted under a row lock so
+  concurrent requests can't slip under the limit. Codes expired for an hour are deleted as new ones
+  are issued.
+- Signing out of the app calls `POST /api/v1/app/logout`: core revokes that Keycloak session's unused
+  codes and tells the website (`POST <FINNS_BOOKING_URL>/auth/revoke`, bearer `FINNS_BOOKING_REVOKE_TOKEN`,
+  one retry) to end the sessions the session started. The `sid` comes from the caller's own token,
+  never from the request. If the token has no `sid`, or the website can't be reached, those sessions
+  expire on their own (15 minutes on the website's side).
+- Core never accepts cookies, and the website's own session is not core's concern.
+
+| Method and path | Auth | Purpose |
+|---|---|---|
+| `POST /api/v1/app/handoffs` | `Bearer <customer access token>` | Issue a code: `201 {code, ttlSeconds}`. |
+| `POST /api/v1/app/logout` | `Bearer <customer access token>` | The customer signed out of the app: `204`. |
+| `POST /api/v1/booking/handoffs/peek` | `Bearer <FINNS_BOOKING_API_TOKEN>` | `{code}` → `200 {displayName}` without using the code, for the website's confirmation page. |
+| `POST /api/v1/booking/handoffs/redeem` | `Bearer <FINNS_BOOKING_API_TOKEN>` | `{code}` → `200 {sub, sid, displayName, email}`, once. |
+
 ## Check-in (proof of concept)
 
 A signed-in customer gets a one-time QR code in the customer app (`app`); a gate device (`gate`, a
@@ -136,6 +166,9 @@ curl -s localhost:8080/api/v1/gate/check-ins -H 'Content-Type: application/json'
 | `FINNS_ADMIN_API_TOKEN` | At least 32 characters (`openssl rand -base64 32`). Must equal the Worker's `CORE_API_TOKEN` secret. Startup fails if it's missing or short. |
 | `FINNS_GATE_API_TOKEN` | At least 32 characters. The gate devices' bearer token for `/api/v1/gate/*`; use a different value from `FINNS_ADMIN_API_TOKEN`. Startup fails if it's missing or short. |
 | `FINNS_AUTH_ISSUER` | The Keycloak realm customers sign in to, for example `https://test-auth.finnsbeachclub.com/realms/finns` (exactly the tokens' `iss`). Startup fails if it's missing. |
+| `FINNS_BOOKING_API_TOKEN` | At least 32 characters. The booking website's bearer token for `/api/v1/booking/*`; different from the other tokens. Must equal the website's `CORE_API_TOKEN` secret. Startup fails if it's missing or short. |
+| `FINNS_BOOKING_REVOKE_TOKEN` | At least 32 characters. What core sends the booking website when a customer signs out of the app; different from every other token. Must equal the website's `REVOKE_TOKEN` secret. Startup fails if it's missing or short. |
+| `FINNS_BOOKING_URL` | The booking website's origin, for example `https://trident-poc-booking.juna.workers.dev` (https in production). Startup fails if it's missing. |
 | `FINNS_CORS_ORIGINS` | Optional. Browser origins allowed to call core, as a Quarkus CORS origin list (`/regex/` entries allowed). Defaults to the app's `trident-app-web` Worker and its preview aliases on `workers.dev`. |
 | `FINNS_STAFF_BOOTSTRAP_ADMINS` | Overrides the default bootstrap admin, `thomas@nordeast.id`. Comma-separated. |
 

@@ -14,6 +14,7 @@ public enum ErrorCode {
 	STALE("stale", 412),
 	INVALID("invalid", 422),
 	PRECONDITION_REQUIRED("precondition_required", 428),
+	RATE_LIMITED("rate_limited", 429),
 	;
 
 	public final String code;

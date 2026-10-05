@@ -46,8 +46,25 @@ See README.md for running, configuration and the Admin API.
   keep it that way.
 - Identify the customer by the token's subject only, through `Customer.ofSubject`. Never by email
   or name: Keycloak owns those, and core doesn't store them.
+- The one place core keeps a customer's display name or email is a `handoff` row, and only until the
+  code is redeemed or revoked (at most `finns.booking.handoff-ttl`, then cleared). Don't copy them
+  anywhere else.
 - Tests sign customer tokens with `Fixtures.customer(sub)` / `Fixtures.customerToken` (test-only key
   in `src/test/resources`). Never add a production key or real token to the repo.
+
+## Booking API and handoff rules
+
+- Everything under `/api/v1/booking/` is authenticated by `BookingApiFilter` (the booking website's
+  bearer token) before routing, like the admin and gate APIs. It is called server to server only, so it
+  has no CORS.
+- A handoff code is a credential that signs a customer in to the booking website. Store only its hash,
+  never log it, and keep it single-use (`Handoff.redeem` is one conditional update; keep it that way
+  rather than read-then-write), short-lived, and rate-limited per customer under the customer's row lock.
+- `Handoff.redeem` and `peek` return nothing for every kind of bad code, so callers can't tell unknown
+  from used or expired. Keep it that way.
+- Take the `sid` for logout from the caller's verified token, never from the request. Notifying the
+  booking website (`BookingNotifier`) is best effort and must never delay or fail the app's sign-out.
+- Core never accepts cookies and never hands the booking website an access token.
 
 ## Gate API and check-in rules
 

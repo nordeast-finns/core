@@ -2,6 +2,7 @@ package com.finns.trident.core;
 
 import com.finns.trident.core.model.CheckIn;
 import com.finns.trident.core.model.Customer;
+import com.finns.trident.core.model.Handoff;
 import com.finns.trident.core.model.Qr;
 import com.finns.trident.core.model.Staff;
 import com.finns.trident.core.model.StaffEvent;
@@ -29,6 +30,9 @@ public final class Fixtures {
 
 	/** Matches {@code %test.finns.gate-api.token}. */
 	public static final String GATE_TOKEN = "test-only-gate-token-not-a-secret-0123";
+
+	/** Matches {@code %test.finns.booking.api-token}. */
+	public static final String BOOKING_TOKEN = "test-only-booking-token-not-a-secret-0";
 
 	/** Matches {@code %test.quarkus.oidc.token.issuer}. */
 	public static final String ISSUER = "https://auth.test/realms/finns";
@@ -76,6 +80,11 @@ public final class Fixtures {
 		}
 	}
 
+	/** A request the booking website's server would make: authenticated, JSON. */
+	public static RequestSpecification booking() {
+		return given().header("Authorization", "Bearer " + BOOKING_TOKEN).contentType(JSON);
+	}
+
 	/** A request a gate device would make: authenticated, JSON. */
 	public static RequestSpecification gate() {
 		return given().header("Authorization", "Bearer " + GATE_TOKEN).contentType(JSON);
@@ -84,6 +93,7 @@ public final class Fixtures {
 	public static void reset() {
 		QuarkusTransaction.requiringNew().run(() -> {
 			CheckIn.deleteAll();
+			Handoff.deleteAll();
 			Qr.deleteAll();
 			Customer.deleteAll();
 			StaffEvent.deleteAll();
@@ -142,6 +152,10 @@ public final class Fixtures {
 
 	public static List<CheckIn> checkIns() {
 		return QuarkusTransaction.requiringNew().call(() -> CheckIn.<CheckIn>listAll());
+	}
+
+	public static List<Handoff> handoffs() {
+		return QuarkusTransaction.requiringNew().call(() -> Handoff.<Handoff>listAll());
 	}
 
 	public static List<Qr> qrs() {
