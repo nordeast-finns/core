@@ -64,6 +64,10 @@ public class Handoff extends PanacheEntityBase {
 	public record Issued(UUID id, String code, Instant expiresAt) {
 	}
 
+	/** Who a code would sign in, for booking's confirmation page. */
+	public record Peeked(String displayName, String email) {
+	}
+
 	/** Who a redeemed code signs in. */
 	public record Redeemed(String sub, String sid, String displayName, String email) {
 	}
@@ -96,12 +100,16 @@ public class Handoff extends PanacheEntityBase {
 		return Optional.of(new Issued(handoff.id, encode(code), handoff.expiresAt));
 	}
 
-	/** The display name of an unused, unexpired code ({@code ""} if the token had none), without using it. */
-	public static Optional<String> peek(String code, Instant now) {
+	/**
+	 * The display name ({@code ""} if the token had none) and email (null if none) of an unused, unexpired
+	 * code, without using it. Booking shows both: a display name is whatever the account holder typed, so
+	 * it can't tell the customer whose account a code is for on its own.
+	 */
+	public static Optional<Peeked> peek(String code, Instant now) {
 		return decode(code)
 				.flatMap(raw -> find("codeHash = ?1 and usedAt is null and expiresAt > ?2", Hashes.sha256(raw), now)
 						.<Handoff>firstResultOptional())
-				.map(h -> h.displayName == null ? "" : h.displayName);
+				.map(h -> new Peeked(h.displayName == null ? "" : h.displayName, h.email));
 	}
 
 	/**
@@ -122,6 +130,16 @@ public class Handoff extends PanacheEntityBase {
 		int updated = update("usedAt = ?1, displayName = null, email = null where id = ?2 and usedAt is null and expiresAt > ?1",
 				now, handoff.id);
 		return updated == 1 ? Optional.of(redeemed) : Optional.empty();
+	}
+
+	/**
+	 * Clears the name and email of codes that expired unused, and deletes codes expired for longer than
+	 * {@link #RETENTION}. Run every minute ({@code HandoffPurge}), so a code never keeps them for much
+	 * longer than it lives.
+	 */
+	public static void purge(Instant now) {
+		update("displayName = null, email = null where expiresAt <= ?1 and (displayName is not null or email is not null)", now);
+		delete("expiresAt < ?1", now.minus(RETENTION));
 	}
 
 	/** Makes the unused codes started from this Keycloak session unusable. */

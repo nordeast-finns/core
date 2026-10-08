@@ -66,10 +66,32 @@ class BookingApiTest {
 		String code = mint();
 		for (int i = 0; i < 2; i++) {
 			Fixtures.booking().body("{\"code\":\"" + code + "\"}").post("/api/v1/booking/handoffs/peek").then()
-					.statusCode(200).header("Cache-Control", "no-store").body("displayName", equalTo("Dewi Lestari"));
+					.statusCode(200).header("Cache-Control", "no-store").body("displayName", equalTo("Dewi Lestari"))
+					.body("email", equalTo("dewi@example.com"));
 		}
 		redeem(code).statusCode(200);
 		Fixtures.booking().body("{\"code\":\"" + code + "\"}").post("/api/v1/booking/handoffs/peek").then().statusCode(404);
+	}
+
+	@Test
+	void purgeClearsWhatExpiredCodesCarriedAndDeletesOldOnes() {
+		for (int i = 0; i < 3; i++) mint();
+		QuarkusTransaction.requiringNew().run(() -> {
+			List<Handoff> rows = Handoff.<Handoff>listAll().stream().sorted(java.util.Comparator.comparing(h -> h.id)).toList();
+			// One just expired, one expired long ago; one still usable.
+			rows.get(0).expiresAt = Instant.now().minusSeconds(1);
+			rows.get(1).expiresAt = Instant.now().minus(java.time.Duration.ofHours(2));
+		});
+		new com.finns.trident.core.HandoffPurge().run();
+
+		List<Handoff> rows = Fixtures.handoffs();
+		assertEquals(2, rows.size());
+		Handoff expired = rows.stream().filter(h -> h.expiresAt.isBefore(Instant.now())).findFirst().orElseThrow();
+		assertNull(expired.displayName);
+		assertNull(expired.email);
+		Handoff usable = rows.stream().filter(h -> h.expiresAt.isAfter(Instant.now())).findFirst().orElseThrow();
+		assertEquals("Dewi Lestari", usable.displayName);
+		assertEquals("dewi@example.com", usable.email);
 	}
 
 	@Test

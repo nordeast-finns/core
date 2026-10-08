@@ -7,6 +7,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -20,6 +21,10 @@ import static jakarta.persistence.GenerationType.IDENTITY;
  */
 @Entity
 public class Customer extends PanacheEntityBase {
+	/** A customer with their points balance, which is 0 before their first posting. */
+	public record WithBalance(UUID publicId, long balance, Instant createdAt) {
+	}
+
 	@Id
 	@GeneratedValue(strategy = IDENTITY)
 	public Long id;
@@ -57,5 +62,18 @@ public class Customer extends PanacheEntityBase {
 
 	public static Optional<Customer> ofPublicId(UUID publicId) {
 		return find("publicId", publicId).firstResultOptional();
+	}
+
+	/** Page {@code page} (0-based) of every customer with their balance, newest first. */
+	public static List<WithBalance> withBalances(int page, int size) {
+		return getEntityManager().createQuery("""
+				select c.publicId, coalesce(a.balance, 0L), c.createdAt
+				from Customer c left join PointsAccount a on a.customerId = c.id
+				order by c.createdAt desc, c.id desc""", Object[].class)
+				.setFirstResult(page * size)
+				.setMaxResults(size)
+				.getResultStream()
+				.map(r -> new WithBalance((UUID) r[0], ((Number) r[1]).longValue(), (Instant) r[2]))
+				.toList();
 	}
 }

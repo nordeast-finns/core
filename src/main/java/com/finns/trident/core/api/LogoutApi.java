@@ -13,8 +13,9 @@ import org.eclipse.microprofile.jwt.JsonWebToken;
 import java.time.Instant;
 
 /**
- * Called by the app as the customer signs out, so the booking website signs them out too. The session
- * is the token's own {@code sid}, never one the caller names, so a customer can only end their own.
+ * Called by the app as the customer signs out, so the booking website signs them out too, everywhere.
+ * The customer and session are the token's own {@code sub} and {@code sid}, never ones the caller
+ * names, so a customer can only sign themselves out.
  */
 @Path(QrApi.PREFIX + "/logout")
 public class LogoutApi {
@@ -28,12 +29,11 @@ public class LogoutApi {
 	@POST
 	@Transactional
 	public Response logout() {
-		if (token.getSubject() == null) throw new NotAuthorizedException("Bearer");
-		Object sid = token.getClaim("sid");
-		if (sid instanceof String s && !s.isBlank()) {
-			Handoff.revokeSession(s, Instant.now());
-			booking.sessionEnded(s);
-		}
+		String sub = token.getSubject();
+		if (sub == null || sub.isBlank()) throw new NotAuthorizedException("Bearer");
+		String sid = token.getClaim("sid") instanceof String s && !s.isBlank() ? s : null;
+		if (sid != null) Handoff.revokeSession(sid, Instant.now());
+		booking.signedOut(sub, sid);
 		return Response.noContent().build();
 	}
 }

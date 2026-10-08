@@ -22,7 +22,7 @@ public class BookingApi {
 	}
 
 	@RegisterForReflection
-	public record Peeked(String displayName) {
+	public record Peeked(String displayName, String email) {
 	}
 
 	@RegisterForReflection
@@ -34,9 +34,9 @@ public class BookingApi {
 	@Path("/peek")
 	@Transactional
 	public Response peek(Code body) {
-		String name = Handoff.peek(body == null ? null : body.code(), Instant.now())
+		Handoff.Peeked p = Handoff.peek(body == null ? null : body.code(), Instant.now())
 				.orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-		return noStore(new Peeked(name));
+		return noStore(new Peeked(p.displayName(), p.email()));
 	}
 
 	/** Uses the code. Any code that can't be used (unknown, used, expired, revoked) is the same 404. */

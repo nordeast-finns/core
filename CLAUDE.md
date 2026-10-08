@@ -28,8 +28,10 @@ See README.md for running, configuration and the Admin API.
 
 - Everything under `/api/v1/admin/` is authenticated by `AdminApiFilter` (the Worker's bearer
   token) before routing. New admin endpoints go under that prefix and are protected by default.
-- Endpoints that act for a staff member resolve the actor from `X-Finns-Actor-Sub` and require an
-  active ADMIN in `core` itself. Never trust the Worker's role decision alone.
+- Endpoints that act for a staff member resolve the actor from `X-Finns-Actor-Sub` and check the
+  actor in `core` itself: an active ADMIN for staff management, any active staff member for reading
+  customers (`CustomerApi`). Never trust the Worker's role decision alone.
+- The Admin API shows customers by `Customer.publicId` too, never the internal id or Keycloak subject.
 - Staff access changes take `Staff.lockAccessChanges()` **before** reading the actor or target, so
   invariant checks see every earlier change. Record a `StaffEvent` in the same transaction.
 - Writes that sign-in makes (`Staff.link`, `Staff.touchSignIn`) are bulk updates that must not
@@ -47,8 +49,8 @@ See README.md for running, configuration and the Admin API.
 - Identify the customer by the token's subject only, through `Customer.ofSubject`. Never by email
   or name: Keycloak owns those, and core doesn't store them.
 - The one place core keeps a customer's display name or email is a `handoff` row, and only until the
-  code is redeemed or revoked (at most `finns.booking.handoff-ttl`, then cleared). Don't copy them
-  anywhere else.
+  code is redeemed, revoked or expired (at most `finns.booking.handoff-ttl` plus a minute, then
+  `HandoffPurge` clears them). Don't copy them anywhere else.
 - Tests sign customer tokens with `Fixtures.customer(sub)` / `Fixtures.customerToken` (test-only key
   in `src/test/resources`). Never add a production key or real token to the repo.
 
@@ -62,7 +64,7 @@ See README.md for running, configuration and the Admin API.
   rather than read-then-write), short-lived, and rate-limited per customer under the customer's row lock.
 - `Handoff.redeem` and `peek` return nothing for every kind of bad code, so callers can't tell unknown
   from used or expired. Keep it that way.
-- Take the `sid` for logout from the caller's verified token, never from the request. Notifying the
+- Take the `sub` and `sid` for logout from the caller's verified token, never from the request. Notifying the
   booking website (`BookingNotifier`) is best effort and must never delay or fail the app's sign-out.
 - Core never accepts cookies and never hands the booking website an access token.
 

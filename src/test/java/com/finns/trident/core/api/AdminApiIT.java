@@ -23,6 +23,7 @@ class AdminApiIT {
 				.body("status", equalTo("none"));
 		Fixtures.worker().body(Map.of("sub", "x", "email", "nobody@x.com"))
 				.post("/api/v1/admin/staff-access/sign-ins").then().statusCode(200).body("status", equalTo("none"));
+		Fixtures.worker().get("/api/v1/admin/customers").then().statusCode(403);
 		Fixtures.worker().get("/api/v1/admin/staff").then().statusCode(403)
 				.contentType("application/problem+json").body("code", equalTo("forbidden"));
 	}
