@@ -194,17 +194,9 @@ public class PointsApi {
 			customerId = parseUuid(body.customerId());
 			if (customerId.isEmpty()) errors.put("customerId", "invalid");
 		}
-		long points = 0;
-		if (body.points() == null || body.points().isNull()) {
-			errors.put("points", "required");
-		} else if (!body.points().isIntegralNumber() || !body.points().canConvertToLong()
-				|| body.points().longValue() < 1 || body.points().longValue() > MAX_POINTS) {
-			errors.put("points", "invalid");
-		} else {
-			points = body.points().longValue();
-		}
+		long points = points(body.points(), errors);
 		if (body.reason() != null && !REASON.matcher(body.reason()).matches()) errors.put("reason", "invalid");
-		if (body.reference() != null && !REFERENCE.matcher(body.reference()).matches()) errors.put("reference", "invalid");
+		checkReference(body.reference(), errors);
 		if (!errors.isEmpty()) throw new BusinessException(INVALID, errors);
 
 		Customer customer = Customer.ofPublicId(customerId.get()).orElseThrow(() -> new BusinessException(NOT_FOUND));
@@ -224,8 +216,25 @@ public class PointsApi {
 		return noStore(r);
 	}
 
-	private static void requireKey(String key) {
+	static void requireKey(String key) {
 		if (key == null || !KEY.matcher(key).matches()) throw new BusinessException(MALFORMED);
+	}
+
+	/** A posting's points, 1 to {@link #MAX_POINTS}; else adds the field error and returns 0. */
+	static long points(JsonNode points, Map<String, String> errors) {
+		if (points == null || points.isNull()) {
+			errors.put("points", "required");
+		} else if (!points.isIntegralNumber() || !points.canConvertToLong() || points.longValue() < 1
+				|| points.longValue() > MAX_POINTS) {
+			errors.put("points", "invalid");
+		} else {
+			return points.longValue();
+		}
+		return 0;
+	}
+
+	static void checkReference(String reference, Map<String, String> errors) {
+		if (reference != null && !REFERENCE.matcher(reference).matches()) errors.put("reference", "invalid");
 	}
 
 	private static Totals totals(PointsTxn.Day day, Kind kind) {
@@ -234,7 +243,7 @@ public class PointsApi {
 	}
 
 	/** The standard 36-character form, in either case. {@link UUID#fromString} also takes short forms like {@code 1-2-3-4-5}. */
-	private static Optional<UUID> parseUuid(String s) {
+	static Optional<UUID> parseUuid(String s) {
 		if (s == null) return Optional.empty();
 		try {
 			UUID id = UUID.fromString(s);
@@ -248,7 +257,7 @@ public class PointsApi {
 		return kind.name().toLowerCase(Locale.ROOT);
 	}
 
-	private static Response noStore(Response.ResponseBuilder r) {
+	static Response noStore(Response.ResponseBuilder r) {
 		return r.header("Cache-Control", "no-store").build();
 	}
 }

@@ -75,6 +75,9 @@ wording.
 | `DELETE /api/v1/admin/staff/{id}/link` | Unlink the JumpCloud subject (`If-Match`). |
 | `DELETE /api/v1/admin/staff/{id}` | Delete (`If-Match`). The events are kept. |
 | `GET /api/v1/admin/customers` | Every customer with their points, newest first: `{items: [{customerId, balance, createdAt}], total, page, size}`. `customerId` is the public id; `balance` is 0 before any posting. `page` (1-based), `size` (≤ 200). Any active staff member. |
+| `GET /api/v1/admin/customers/{customerId}` | `{customerId, balance, seq, createdAt, transactions}`: the latest 100 transactions, newest first, each like the Points API's (without `customerId` and `seq`) plus `staffId` and `staffEmail` (null for the Points API's; `staffEmail` also once the staff member is deleted). Any active staff member. |
+| `POST /api/v1/admin/customers/{customerId}/credits` | Staff adjustment: `{points, reference?}` with `Idempotency-Key` → `201` transaction. Any active staff member; see [Points](#points). |
+| `POST /api/v1/admin/customers/{customerId}/debits` | Same, or `409 insufficient_points`. |
 
 `/q/health/ready` (which includes the database) is public, for the platform's health check.
 
@@ -169,7 +172,8 @@ The membership program is split between core and a points partner, Sota Platform
 the "who"**: it keeps the member list (every customer) and each one's points, and is their system of
 record. **Sota decides the "how"**: raffles, rewards, redemptions and campaigns, adding and deducting
 points through the Points API. Sota keeps the record of its own draws, entries and prizes. core
-provides the API but doesn't post points itself. There are no tiers, expiry or holds.
+never posts points on its own; besides Sota, only staff adjust a balance, by hand in the Admin Console
+(see [Staff adjustments](#staff-adjustments)). There are no tiers, expiry or holds.
 
 **Ledger.** Double-entry, in whole points (`bigint`). Each transaction (`points_txn`: `CREDIT`,
 `DEBIT` or `REFUND`) has two entries (`points_entry`) that sum to zero: one on the customer's account
@@ -179,7 +183,8 @@ provides the API but doesn't post points itself. There are no tiers, expiry or h
 - a transaction's entries sum to zero (deferred constraint trigger, at commit),
 - a customer's balance is never negative,
 - transactions and entries are never updated or deleted (trigger),
-- an idempotency key is used once, and a transaction is refunded at most once (unique indexes).
+- an idempotency key is used once per client, and a transaction is refunded at most once (unique
+  indexes).
 
 Only customer accounts cache their `balance` and `seq` (postings so far): caching the system
 accounts' would queue every posting on one row. A **daily check** (`PointsCheck`, 02:30 in Bali,
@@ -187,7 +192,7 @@ accounts' would queue every posting on one row. A **daily check** (`PointsCheck`
 sum to zero, logging `points.check_failed` at ERROR on any mismatch. One instance runs it, under an
 advisory lock.
 
-**Posting** (`PointsTxn.post`/`refund`, the only writers) is one Postgres transaction: claim the
+**Posting** (`PointsTxn.post`/`postByStaff`/`refund`, the only writers) is one Postgres transaction: claim the
 idempotency key (`insert ... on conflict do nothing`, which waits for a concurrent request with the
 same key), move the balance with one conditional update (`balance + delta >= 0`, which is also the
 customer's lock, so one customer's postings queue and different customers' don't wait for each
@@ -195,7 +200,14 @@ other), insert the entries, append a feed event. A failure rolls everything back
 so only successful postings replay.
 
 **Refunds** reverse a credit or debit in full, once. A refund of a credit whose points were spent
-fails with `insufficient_points`. A refund can't be refunded; correct it with a new posting.
+fails with `insufficient_points`. A refund can't be refunded; correct it with a new posting. Neither
+can a staff adjustment (`not_refundable`): staff correct theirs with an opposite adjustment.
+
+**Staff adjustments.** Any active staff member can credit or debit a customer in the Admin Console
+(`POST /api/v1/admin/customers/{customerId}/credits|debits`). They're ordinary postings with the same
+checks, recorded with the staff member (`points_txn.staff_id`) and the reason `staff_adjustment`, so
+Sota sees them in the feed and the reconciliation like its own. Idempotency keys are scoped per client
+(Sota's, and each staff member's), so one can't replay or block another's posting.
 
 **Feed.** `points_event` lists new customers (`customer.created`, written by `Customer.ofSubject`) and
 postings (`points.posted`), in the transaction that made them. It's served in `(xid, id)` order (`xid`
@@ -222,7 +234,7 @@ to server. Responses are `Cache-Control: no-store`.
 | `GET /api/v1/points/reconciliation/{businessDate}` | `{businessDate, timeZone, credits, debits, refunds, transactionsSha256}`: each total is `{count, points}` (net effect on balances), and the hash is SHA-256 (hex) of the date's sorted lowercase transaction ids, each followed by `\n`. Final once the date has ended in Bali. |
 
 - The three `POST`s need `Idempotency-Key` (1–128 printable ASCII characters, no spaces; missing or
-  bad is `400 malformed`). Keys are global (one client for now) and never expire. The same key and
+  bad is `400 malformed`). Keys are Sota's own (staff postings have their own) and never expire. The same key and
   request returns the original `201` and body with `Idempotent-Replayed: true`; the same key with a
   different request is `422 idempotency_mismatch`. Callers retry timeouts, 5xx and 429 with the same
   key until they get an answer.

@@ -29,8 +29,8 @@ See README.md for running, configuration and the Admin API.
 - Everything under `/api/v1/admin/` is authenticated by `AdminApiFilter` (the Worker's bearer
   token) before routing. New admin endpoints go under that prefix and are protected by default.
 - Endpoints that act for a staff member resolve the actor from `X-Finns-Actor-Sub` and check the
-  actor in `core` itself: an active ADMIN for staff management, any active staff member for reading
-  customers (`CustomerApi`). Never trust the Worker's role decision alone.
+  actor in `core` itself: an active ADMIN for staff management, any active staff member for customers
+  and their points (`CustomerApi`). Never trust the Worker's role decision alone.
 - The Admin API shows customers by `Customer.publicId` too, never the internal id or Keycloak subject.
 - Staff access changes take `Staff.lockAccessChanges()` **before** reading the actor or target, so
   invariant checks see every earlier change. Record a `StaffEvent` in the same transaction.
@@ -95,15 +95,19 @@ See README.md for running, configuration and the Admin API.
   only by `Customer.publicId`. Never expose the internal id or the Keycloak subject on this API, and
   never put personal data in the ledger or the feed.
 - core decides the "who" (members and balances); the partner decides the "how" (what points are for).
-  core provides the API but doesn't post points itself.
-- `PointsTxn.post` and `refund` are the only writers of the ledger. Keep the ledger double-entry
+  core never posts points on its own: besides the partner, only staff adjust balances, by hand in the
+  Admin Console (`PointsTxn.postByStaff`, reason `staff_adjustment`, recording `staff_id`).
+- `PointsTxn.post`, `postByStaff` and `refund` are the only writers of the ledger. Keep the ledger double-entry
   (two entries summing to zero), append-only (`points_txn`, `points_entry`), and the balance change one
   conditional update (`balance + delta >= 0`) rather than read-then-write. Postgres enforces these;
   don't add a path around them, and correct mistakes with new postings.
 - Cache balances on customer accounts only, never on system accounts (one hot row for every posting).
 - Every posting needs an `Idempotency-Key`. Only successful postings are stored and replayed; a failure
-  rolls back the key too. Keys are global while there's one client; scope them per client before
-  adding a second.
+  rolls back the key too. Keys are scoped per client by `unique nulls not distinct (staff_id,
+  idempotency_key)`: the Points API's (`staff_id` null) and each staff member's. Every lookup by key
+  must filter by the client too.
+- A client never reverses another's postings: the Points API can't refund a staff posting
+  (`not_refundable`), and staff correct theirs with an opposite posting.
 - Write a `points_event` in the same transaction as every new customer and posting. The feed is served
   in `(xid, id)` order below the snapshot's `xmin`, so it never skips a late commit. Keep it that way
   rather than paging by id or time.

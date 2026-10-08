@@ -34,8 +34,9 @@ import static jakarta.persistence.EnumType.STRING;
  * enforces that, that customer balances never go negative, and that transactions and entries are never
  * changed: a mistake is undone by a refund or another posting.
  * <p>
- * {@link #post} and {@link #refund} are the only writers of the ledger. Each is idempotent on the
- * caller's key: a retry of the same request returns the original transaction instead of posting again.
+ * {@link #post}, {@link #postByStaff} and {@link #refund} are the only writers of the ledger. Each is
+ * idempotent on the caller's key: a retry of the same request returns the original transaction instead of
+ * posting again. Keys are scoped per client: the Points API's, and each staff member's.
  */
 @Entity
 @Immutable
@@ -46,6 +47,9 @@ public class PointsTxn extends PanacheEntityBase {
 		/** Reverses a credit or debit in full, once. */
 		REFUND,
 	}
+
+	/** The {@link #reason} of every posting staff make in the Admin Console. */
+	public static final String STAFF_REASON = "staff_adjustment";
 
 	@Id
 	public UUID id;
@@ -70,6 +74,9 @@ public class PointsTxn extends PanacheEntityBase {
 	/** The transaction a refund reverses. */
 	public UUID refundOf;
 
+	/** The staff member who posted it in the Admin Console; null for the Points API's postings. */
+	public Long staffId;
+
 	@Column(nullable = false)
 	public Instant recordedAt;
 
@@ -93,16 +100,38 @@ public class PointsTxn extends PanacheEntityBase {
 	}
 
 	/**
+	 * A transaction in a customer's history, with who posted it: {@code staffId} is null for the Points
+	 * API, and {@code staffEmail} also once that staff member is deleted.
+	 */
+	public record Line(Posted posted, Long staffId, String staffEmail) {
+	}
+
+	/**
 	 * Credits or debits {@code customer}. A debit that would make the balance negative fails with
 	 * {@code insufficient_points}. {@code points} is positive; {@code kind} is CREDIT or DEBIT.
 	 */
 	public static Posted post(Kind kind, Customer customer, long points, String reason, String reference, String key,
 			Instant now, ZoneId zone) {
+		return post(kind, customer, points, reason, reference, null, key, now, zone);
+	}
+
+	/**
+	 * Like {@link #post}, for {@code staff} in the Admin Console: the posting records them, has the reason
+	 * {@link #STAFF_REASON}, and {@code key} is theirs alone.
+	 */
+	public static Posted postByStaff(Kind kind, Customer customer, long points, String reference, Staff staff,
+			String key, Instant now, ZoneId zone) {
+		return post(kind, customer, points, STAFF_REASON, reference, staff.id, key, now, zone);
+	}
+
+	private static Posted post(Kind kind, Customer customer, long points, String reason, String reference,
+			Long staffId, String key, Instant now, ZoneId zone) {
 		if (kind == Kind.REFUND || points <= 0) throw new IllegalArgumentException();
 		byte[] hash = requestHash(kind.name(), customer.publicId.toString(), Long.toString(points), reason, reference);
-		Optional<UUID> claimed = claim(kind, customer.id, key, hash, reason, reference, null, now, zone);
+		Optional<UUID> claimed = claim(kind, customer.id, staffId, key, hash, reason, reference, null, now, zone);
 		if (claimed.isEmpty()) {
-			return replay(key, hash).orElseThrow(() -> new IllegalStateException("points_txn conflict without its key"));
+			return replay(staffId, key, hash)
+					.orElseThrow(() -> new IllegalStateException("points_txn conflict without its key"));
 		}
 		UUID id = claimed.get();
 		long delta = kind == Kind.CREDIT ? points : -points;
@@ -112,19 +141,21 @@ public class PointsTxn extends PanacheEntityBase {
 	}
 
 	/**
-	 * Reverses the credit or debit {@code originalId} in full. Fails with {@code not_found} if there's no
-	 * such transaction, {@code not_refundable} for a refund, {@code already_refunded}, and
-	 * {@code insufficient_points} when refunding a credit whose points were spent.
+	 * Reverses the Points API's credit or debit {@code originalId} in full. Fails with {@code not_found} if
+	 * there's no such transaction, {@code not_refundable} for a refund or a staff posting (staff correct
+	 * theirs with another posting), {@code already_refunded}, and {@code insufficient_points} when
+	 * refunding a credit whose points were spent.
 	 */
 	public static Posted refund(UUID originalId, String reference, String key, Instant now, ZoneId zone) {
 		PointsTxn original = PointsTxn.<PointsTxn>findByIdOptional(originalId)
 				.orElseThrow(() -> new BusinessException(NOT_FOUND));
-		if (original.kind == Kind.REFUND) throw new BusinessException(NOT_REFUNDABLE);
+		if (original.kind == Kind.REFUND || original.staffId != null) throw new BusinessException(NOT_REFUNDABLE);
 		byte[] hash = requestHash(Kind.REFUND.name(), originalId.toString(), reference);
-		Optional<UUID> claimed = claim(Kind.REFUND, original.customerId, key, hash, null, reference, originalId, now, zone);
+		Optional<UUID> claimed = claim(Kind.REFUND, original.customerId, null, key, hash, null, reference, originalId,
+				now, zone);
 		if (claimed.isEmpty()) {
 			// No transaction has this key, so the conflict was another refund of the same transaction.
-			return replay(key, hash).orElseThrow(() -> new BusinessException(ALREADY_REFUNDED));
+			return replay(null, key, hash).orElseThrow(() -> new BusinessException(ALREADY_REFUNDED));
 		}
 		UUID id = claimed.get();
 		long delta = -PointsEntry.customerSide(originalId).amount;
@@ -135,17 +166,17 @@ public class PointsTxn extends PanacheEntityBase {
 	}
 
 	/**
-	 * Inserts the transaction, unless one with the same key, or a refund of the same transaction,
-	 * exists. Postgres waits for a conflicting transaction still in flight, so on empty the conflicting
+	 * Inserts the transaction, unless one with the same client and key, or a refund of the same
+	 * transaction, exists. Postgres waits for a conflicting transaction still in flight, so on empty the conflicting
 	 * row has committed and is visible.
 	 */
-	private static Optional<UUID> claim(Kind kind, long customerId, String key, byte[] hash, String reason,
-			String reference, UUID refundOf, Instant now, ZoneId zone) {
+	private static Optional<UUID> claim(Kind kind, long customerId, Long staffId, String key, byte[] hash,
+			String reason, String reference, UUID refundOf, Instant now, ZoneId zone) {
 		@SuppressWarnings("unchecked")
 		List<UUID> ids = getEntityManager().createNativeQuery("""
 				insert into points_txn (kind, customer_id, idempotency_key, request_hash, reason, reference, refund_of,
-				    recorded_at, business_date)
-				values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+				    recorded_at, business_date, staff_id)
+				values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
 				on conflict do nothing
 				returning id""", UUID.class)
 				.setParameter(1, kind.name())
@@ -157,13 +188,19 @@ public class PointsTxn extends PanacheEntityBase {
 				.setParameter(7, refundOf)
 				.setParameter(8, now)
 				.setParameter(9, LocalDate.ofInstant(now, zone))
+				.setParameter(10, staffId)
 				.getResultList();
 		return ids.stream().findFirst();
 	}
 
-	/** The transaction posted under {@code key}, if any; a different request reusing the key fails. */
-	private static Optional<Posted> replay(String key, byte[] hash) {
-		Optional<PointsTxn> existing = find("idempotencyKey", key).firstResultOptional();
+	/**
+	 * The transaction the client ({@code staffId}, null for the Points API) posted under {@code key}, if
+	 * any; a different request reusing the key fails.
+	 */
+	private static Optional<Posted> replay(Long staffId, String key, byte[] hash) {
+		Optional<PointsTxn> existing = staffId == null
+				? find("staffId is null and idempotencyKey = ?1", key).firstResultOptional()
+				: find("staffId = ?1 and idempotencyKey = ?2", staffId, key).firstResultOptional();
 		if (existing.isEmpty()) return Optional.empty();
 		if (!MessageDigest.isEqual(existing.get().requestHash, hash)) throw new BusinessException(IDEMPOTENCY_MISMATCH);
 		return Optional.of(posted(existing.get().id, true));
@@ -222,6 +259,26 @@ public class PointsTxn extends PanacheEntityBase {
 		PointsEntry e = (PointsEntry) row[1];
 		return new Posted(t.id, t.kind, (UUID) row[2], e.amount, e.balanceAfter, e.seq, t.reason, t.reference,
 				t.refundOf, t.recordedAt, replayed);
+	}
+
+	/** The customer's latest {@code limit} transactions, newest first. */
+	public static List<Line> history(Customer customer, int limit) {
+		return getEntityManager().createQuery("""
+				select t, e, s.email from PointsTxn t
+				join PointsEntry e on e.txnId = t.id and e.seq is not null
+				left join Staff s on s.id = t.staffId
+				where t.customerId = ?1
+				order by e.seq desc""", Object[].class)
+				.setParameter(1, customer.id)
+				.setMaxResults(limit)
+				.getResultStream()
+				.map(r -> {
+					PointsTxn t = (PointsTxn) r[0];
+					PointsEntry e = (PointsEntry) r[1];
+					return new Line(new Posted(t.id, t.kind, customer.publicId, e.amount, e.balanceAfter, e.seq,
+							t.reason, t.reference, t.refundOf, t.recordedAt, false), t.staffId, (String) r[2]);
+				})
+				.toList();
 	}
 
 	/**
