@@ -3,8 +3,8 @@
 The FINNS backend: Quarkus 3 (Java 25), Postgres, Flyway. Built as a native image and deployed to
 DigitalOcean from GHCR (`.github/workflows/ci.yml`).
 
-Today it serves the Admin Console's staff-access model and a proof of concept of QR self-check-in
-(gates, rooms, lockers). Customer-facing apps use it too, so the domain word for console accounts is
+Today it serves the Admin Console's staff-access model, a proof of concept of QR self-check-in
+(gates, rooms, lockers), and the points ledger behind the membership program run with Sota Platforms. Customer-facing apps use it too, so the domain word for console accounts is
 **staff**, and for the people using those apps **customer**, never "user".
 
 ## Developing
@@ -19,7 +19,8 @@ Needs Docker, for Dev Services' Postgres.
 - **Dev** runs `db/migration` plus the dev seed in `db/dev`: `thomas@nordeast.id` (ADMIN),
   `admin@bla.com` (ADMIN) and `staff@bla.com` (STAFF). The dev database is kept between restarts.
 - **Tests** always start from an empty database, and each test resets the tables.
-- The dev and test admin-API, gate-API and booking tokens in `application.properties` are public and dev-only.
+- The dev and test admin-API, gate-API, booking and points tokens in `application.properties` are public and dev-only.
+- Dev Services runs Postgres 18, like production (the points ledger uses `uuidv7()`, new in 18).
 - **Dev** checks customer tokens against the real test realm
   (`https://test-auth.finnsbeachclub.com/realms/finns`), so the `app` can sign in and call a local core.
   **Tests** sign their own with `src/test/resources/customer-token-key.pem`, a test-only key.
@@ -89,6 +90,10 @@ paths (401, empty body), checked before routing. Core accepts only access tokens
 - were issued to the customer app (`azp` is `trident-app`), are access tokens (`typ` is `Bearer`),
   and carry a subject.
 
+Every customer is also a points member (see [Points](#points)): there's no separate enrolment.
+Points partners know a customer only by `customer.public_id`, a random UUID, never the internal id
+or the Keycloak subject.
+
 Keycloak isn't needed to start: if it's unreachable, core starts anyway and connects on the first
 customer request (which fails until Keycloak is back).
 
@@ -157,6 +162,77 @@ curl -s localhost:8080/api/v1/gate/check-ins -H 'Content-Type: application/json'
   -d "{\"gateId\":\"dev-gate\",\"qr\":\"$QR\"}"
 ```
 
+## Points
+
+The membership program is split between core and a points partner, Sota Platforms. **core decides
+the "who"**: it keeps the member list (every customer) and each one's points, and is their system of
+record. **Sota decides the "how"**: raffles, rewards, redemptions and campaigns, adding and deducting
+points through the Points API. Sota keeps the record of its own draws, entries and prizes. core
+provides the API but doesn't post points itself. There are no tiers, expiry or holds.
+
+**Ledger.** Double-entry, in whole points (`bigint`). Each transaction (`points_txn`: `CREDIT`,
+`DEBIT` or `REFUND`) has two entries (`points_entry`) that sum to zero: one on the customer's account
+(`points_account`, created by their first posting) and one on a system account (`ISSUED` for credits,
+`REDEEMED` for debits). Postgres enforces that:
+
+- a transaction's entries sum to zero (deferred constraint trigger, at commit),
+- a customer's balance is never negative,
+- transactions and entries are never updated or deleted (trigger),
+- an idempotency key is used once, and a transaction is refunded at most once (unique indexes).
+
+Only customer accounts cache their `balance` and `seq` (postings so far): caching the system
+accounts' would queue every posting on one row. A **daily check** (`PointsCheck`, 02:30 in Bali,
+`finns.points.check-cron`) compares each customer account's cache with its entries and that all entries
+sum to zero, logging `points.check_failed` at ERROR on any mismatch. One instance runs it, under an
+advisory lock.
+
+**Posting** (`PointsTxn.post`/`refund`, the only writers) is one Postgres transaction: claim the
+idempotency key (`insert ... on conflict do nothing`, which waits for a concurrent request with the
+same key), move the balance with one conditional update (`balance + delta >= 0`, which is also the
+customer's lock, so one customer's postings queue and different customers' don't wait for each
+other), insert the entries, append a feed event. A failure rolls everything back, including the key,
+so only successful postings replay.
+
+**Refunds** reverse a credit or debit in full, once. A refund of a credit whose points were spent
+fails with `insufficient_points`. A refund can't be refunded; correct it with a new posting.
+
+**Feed.** `points_event` lists new customers (`customer.created`, written by `Customer.ofSubject`) and
+postings (`points.posted`), in the transaction that made them. It's served in `(xid, id)` order (`xid`
+is the writer's transaction id) and only from transactions older than every one still running, so
+a reader never skips an event that commits late. A long-running write transaction anywhere on the
+cluster (Keycloak's database shares it) delays the feed until it ends, without losing events.
+`points.posted` carries the account's `seq` and `balance` after the posting: feed order isn't always
+one customer's posting order, so consumers keep the highest `seq`. Events are kept forever, so
+reading from the start rebuilds a copy.
+
+**Business dates** are Bali's (`finns.points.time-zone`, `Asia/Makassar`).
+
+Everything under `/api/v1/points/` needs `Authorization: Bearer <FINNS_POINTS_API_TOKEN>`, including
+unknown paths (401, empty body), checked before routing like the other token APIs. It's called server
+to server. Responses are `Cache-Control: no-store`.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/v1/points/customers/{customerId}` | `{customerId, balance, seq}`; 0 and 0 before any posting. 404 if unknown. |
+| `POST /api/v1/points/credits` | `{customerId, points, reason?, reference?}` → `201` transaction. |
+| `POST /api/v1/points/debits` | Same → `201`, or `409 insufficient_points`. |
+| `POST /api/v1/points/transactions/{transactionId}/refund` | `{reference?}` (body optional) → `201` transaction. `409 already_refunded`, `not_refundable` or `insufficient_points`; 404 if unknown. |
+| `GET /api/v1/points/events?after=&limit=` | `{events: [{eventId, type, customerId, at, transaction?}], next}`. Omit `after` to read from the start, then pass `next` back. `limit` 1–500 (default 100). |
+| `GET /api/v1/points/reconciliation/{businessDate}` | `{businessDate, timeZone, credits, debits, refunds, transactionsSha256}`: each total is `{count, points}` (net effect on balances), and the hash is SHA-256 (hex) of the date's sorted lowercase transaction ids, each followed by `\n`. Final once the date has ended in Bali. |
+
+- The three `POST`s need `Idempotency-Key` (1–128 printable ASCII characters, no spaces; missing or
+  bad is `400 malformed`). Keys are global (one client for now) and never expire. The same key and
+  request returns the original `201` and body with `Idempotent-Replayed: true`; the same key with a
+  different request is `422 idempotency_mismatch`. Callers retry timeouts, 5xx and 429 with the same
+  key until they get an answer.
+- A transaction is `{transactionId, kind (credit|debit|refund), customerId, points, balance, seq,
+  reason?, reference?, refundOf?, recordedAt}`. `points` is signed, from the customer's side; `balance`
+  and `seq` are the account's after it.
+- `points` is a JSON integer, 1 to 1,000,000,000 (a fraction or a string is `invalid`). `reason` is
+  the caller's code (`[A-Za-z0-9_.:-]{1,32}`) and `reference` its id (like the key); both are opaque to
+  core. Field errors are `422 invalid` with `fields`. `customerId` takes the standard UUID form in
+  either case; responses use lowercase.
+
 ## Configuration
 
 | Env var | Meaning |
@@ -168,6 +244,7 @@ curl -s localhost:8080/api/v1/gate/check-ins -H 'Content-Type: application/json'
 | `FINNS_AUTH_ISSUER` | The Keycloak realm customers sign in to, for example `https://test-auth.finnsbeachclub.com/realms/finns` (exactly the tokens' `iss`). Startup fails if it's missing. |
 | `FINNS_BOOKING_API_TOKEN` | At least 32 characters. The booking website's bearer token for `/api/v1/booking/*`; different from the other tokens. Must equal the website's `CORE_API_TOKEN` secret. Startup fails if it's missing or short. |
 | `FINNS_BOOKING_REVOKE_TOKEN` | At least 32 characters. What core sends the booking website when a customer signs out of the app; different from every other token. Must equal the website's `REVOKE_TOKEN` secret. Startup fails if it's missing or short. |
+| `FINNS_POINTS_API_TOKEN` | At least 32 characters. Points partners' (Sota's) bearer token for `/api/v1/points/*`; different from every other token. Startup fails if it's missing or short. |
 | `FINNS_BOOKING_URL` | The booking website's origin, for example `https://trident-poc-booking.juna.workers.dev` (https in production). Startup fails if it's missing. |
 | `FINNS_CORS_ORIGINS` | Optional. Browser origins allowed to call core, as a Quarkus CORS origin list (`/regex/` entries allowed). Defaults to the app's `trident-app-web` Worker and its preview aliases on `workers.dev`. |
 | `FINNS_STAFF_BOOTSTRAP_ADMINS` | Overrides the default bootstrap admin, `thomas@nordeast.id`. Comma-separated. |

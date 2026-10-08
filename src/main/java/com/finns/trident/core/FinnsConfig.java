@@ -6,6 +6,7 @@ import jakarta.validation.constraints.Size;
 
 import java.net.URI;
 import java.time.Duration;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 
@@ -20,6 +21,8 @@ public interface FinnsConfig {
 	GateApi gateApi();
 
 	Booking booking();
+
+	Points points();
 
 	Staff staff();
 
@@ -52,6 +55,20 @@ public interface FinnsConfig {
 		/** How long a handoff code can be redeemed. */
 		@WithDefault("60s")
 		Duration handoffTtl();
+	}
+
+	interface Points {
+		/** Bearer token Points API clients (Sota) send on every {@code /api/v1/points/*} call. */
+		@Size(min = 32)
+		String apiToken();
+
+		/** Where a transaction's business date is taken, for reconciliation: Bali. */
+		@WithDefault("Asia/Makassar")
+		ZoneId timeZone();
+
+		/** When the ledger integrity check runs, in UTC: 02:30 in Bali. */
+		@WithDefault("0 30 18 * * ?")
+		String checkCron();
 	}
 
 	interface Staff {

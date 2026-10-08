@@ -3,9 +3,11 @@ package com.finns.trident.core;
 import com.finns.trident.core.model.CheckIn;
 import com.finns.trident.core.model.Customer;
 import com.finns.trident.core.model.Handoff;
+import com.finns.trident.core.model.PointsAccount;
 import com.finns.trident.core.model.Qr;
 import com.finns.trident.core.model.Staff;
 import com.finns.trident.core.model.StaffEvent;
+import io.quarkus.hibernate.orm.panache.Panache;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.restassured.specification.RequestSpecification;
 import io.smallrye.jwt.build.Jwt;
@@ -33,6 +35,9 @@ public final class Fixtures {
 
 	/** Matches {@code %test.finns.booking.api-token}. */
 	public static final String BOOKING_TOKEN = "test-only-booking-token-not-a-secret-0";
+
+	/** Matches {@code %test.finns.points.api-token}. */
+	public static final String POINTS_TOKEN = "test-only-points-token-not-a-secret-0";
 
 	/** Matches {@code %test.quarkus.oidc.token.issuer}. */
 	public static final String ISSUER = "https://auth.test/realms/finns";
@@ -85,6 +90,16 @@ public final class Fixtures {
 		return given().header("Authorization", "Bearer " + BOOKING_TOKEN).contentType(JSON);
 	}
 
+	/** A request a points partner (Sota) would make: authenticated, JSON. */
+	public static RequestSpecification points() {
+		return given().header("Authorization", "Bearer " + POINTS_TOKEN).contentType(JSON);
+	}
+
+	/** A points partner's posting request with {@code key} as its Idempotency-Key. */
+	public static RequestSpecification points(String key) {
+		return points().header("Idempotency-Key", key);
+	}
+
 	/** A request a gate device would make: authenticated, JSON. */
 	public static RequestSpecification gate() {
 		return given().header("Authorization", "Bearer " + GATE_TOKEN).contentType(JSON);
@@ -92,6 +107,9 @@ public final class Fixtures {
 
 	public static void reset() {
 		QuarkusTransaction.requiringNew().run(() -> {
+			// The ledger is append-only, which truncate bypasses.
+			Panache.getEntityManager().createNativeQuery("truncate points_entry, points_txn, points_event").executeUpdate();
+			PointsAccount.delete("customerId is not null");
 			CheckIn.deleteAll();
 			Handoff.deleteAll();
 			Qr.deleteAll();

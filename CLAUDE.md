@@ -84,8 +84,33 @@ See README.md for running, configuration and the Admin API.
 - `check_in.source`, `scanned_at` and `recorded_at` exist for check-ins that gates decide offline and
   upload later; online check-ins set `ONLINE` and equal times.
 
+## Points API and ledger rules
+
+- Everything under `/api/v1/points/` is authenticated by `PointsApiFilter` (the points partners'
+  bearer token, Sota's for now) before routing, like the admin, gate and booking APIs. Server to server,
+  no CORS.
+- Every customer is a points member; there's no member table or enrolment. Partners know a customer
+  only by `Customer.publicId`. Never expose the internal id or the Keycloak subject on this API, and
+  never put personal data in the ledger or the feed.
+- core decides the "who" (members and balances); the partner decides the "how" (what points are for).
+  core provides the API but doesn't post points itself.
+- `PointsTxn.post` and `refund` are the only writers of the ledger. Keep the ledger double-entry
+  (two entries summing to zero), append-only (`points_txn`, `points_entry`), and the balance change one
+  conditional update (`balance + delta >= 0`) rather than read-then-write. Postgres enforces these;
+  don't add a path around them, and correct mistakes with new postings.
+- Cache balances on customer accounts only, never on system accounts (one hot row for every posting).
+- Every posting needs an `Idempotency-Key`. Only successful postings are stored and replayed; a failure
+  rolls back the key too. Keys are global while there's one client; scope them per client before
+  adding a second.
+- Write a `points_event` in the same transaction as every new customer and posting. The feed is served
+  in `(xid, id)` order below the snapshot's `xmin`, so it never skips a late commit. Keep it that way
+  rather than paging by id or time.
+- Points stay non-cash: no buying, transferring or cashing out points, and no money accounts, which
+  would raise Indonesian e-money questions.
+
 ## Tests
 
-`@QuarkusTest` with Dev Services Postgres (Docker is required). `Fixtures` holds the token,
-request builders and row helpers, and tests reset the tables in `@BeforeEach`. `*IT` classes are
-HTTP-only smoke tests that CI runs against the native image.
+`@QuarkusTest` with Dev Services Postgres 18, like production (Docker is required). `Fixtures` holds
+the tokens, request builders and row helpers, and tests reset the tables in `@BeforeEach` (the
+append-only points tables with `truncate`). `*IT` classes are HTTP-only smoke tests that CI runs
+against the native image.

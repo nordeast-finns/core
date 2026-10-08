@@ -10,9 +10,14 @@ public enum ErrorCode {
 	NOT_FOUND("not_found", 404),
 	EMAIL_TAKEN("email_taken", 409),
 	LAST_ADMIN("last_admin", 409),
+	INSUFFICIENT_POINTS("insufficient_points", 409),
+	ALREADY_REFUNDED("already_refunded", 409),
+	NOT_REFUNDABLE("not_refundable", 409),
 	SELF_CHANGE("self_change", 409),
 	STALE("stale", 412),
 	INVALID("invalid", 422),
+	/** An Idempotency-Key reused for a different request. */
+	IDEMPOTENCY_MISMATCH("idempotency_mismatch", 422),
 	PRECONDITION_REQUIRED("precondition_required", 428),
 	RATE_LIMITED("rate_limited", 429),
 	;
