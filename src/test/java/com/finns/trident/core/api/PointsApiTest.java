@@ -18,6 +18,7 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
@@ -40,7 +41,8 @@ class PointsApiTest {
 	@BeforeEach
 	void reset() {
 		Fixtures.reset();
-		customer = Fixtures.customerRow(Fixtures.CUSTOMER_SUB);
+		// With a profile, to check that the Points API never shows it.
+		customer = Fixtures.customerRow(Fixtures.CUSTOMER_SUB, "Dewi Lestari", "dewi@example.com");
 	}
 
 	private String id() {
@@ -77,7 +79,9 @@ class PointsApiTest {
 				.header("Cache-Control", "no-store")
 				.body("customerId", equalTo(id()))
 				.body("balance", equalTo(0))
-				.body("seq", equalTo(0));
+				.body("seq", equalTo(0))
+				// No personal data: the customer's display name and email are for the Admin Console only.
+				.body("keySet()", equalTo(Set.of("customerId", "balance", "seq")));
 	}
 
 	@Test

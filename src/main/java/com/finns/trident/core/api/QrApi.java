@@ -6,7 +6,6 @@ import com.finns.trident.core.model.Qr;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
-import jakarta.ws.rs.NotAuthorizedException;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.core.Response;
@@ -45,12 +44,8 @@ public class QrApi {
 	@POST
 	@Transactional
 	public Response issue() {
-		// Quarkus already requires a subject (quarkus.oidc.token.subject-required); this keeps a token
-		// without one from ever becoming a customer.
-		String sub = token.getSubject();
-		if (sub == null || sub.isBlank()) throw new NotAuthorizedException("Bearer");
 		Instant now = Instant.now();
-		Customer customer = Customer.ofSubject(sub, now);
+		Customer customer = AppToken.customer(token, now);
 		Qr.Issued issued = Qr.issue(customer.id, config.qr().ttl(), now);
 		logger.infof("qr.issued qrId=%s customerId=%d", issued.id(), customer.id);
 		return Response.status(Response.Status.CREATED)

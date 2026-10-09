@@ -46,11 +46,17 @@ See README.md for running, configuration and the Admin API.
   Keycloak access token before routing (`quarkus.http.auth.permission.app`), so new endpoints there
   are protected by default. Auth isn't proactive, so the admin and gate tokens never reach OIDC;
   keep it that way.
-- Identify the customer by the token's subject only, through `Customer.ofSubject`. Never by email
-  or name: Keycloak owns those, and core doesn't store them.
-- The one place core keeps a customer's display name or email is a `handoff` row, and only until the
-  code is redeemed, revoked or expired (at most `finns.booking.handoff-ttl` plus a minute, then
-  `HandoffPurge` clears them). Don't copy them anywhere else.
+- Identify the customer by the token's subject only, through `AppToken.customer` (`Customer.ofSubject`).
+  Never by email or name: Keycloak owns those. Read the token's other claims through `AppToken`, which
+  makes them safe to write (no control characters, cut to the column) and reads each the same way
+  everywhere.
+- core keeps a customer's display name and email in two places only. `customer.display_name` and
+  `email` (`Customer.Profile`) are a cache of the token's claims, refreshed by every request that
+  resolves the customer, so staff can see and search customers. Keycloak wins: never let anyone edit
+  the copy or identify a customer by it, and return it only on the Admin API, never on the Points or
+  Gate APIs, in the points feed or in logs. A `handoff` row has them only until the code is redeemed,
+  revoked or expired (at most `finns.booking.handoff-ttl` plus a minute, then `HandoffPurge` clears
+  them). Don't copy them anywhere else.
 - Tests sign customer tokens with `Fixtures.customer(sub)` / `Fixtures.customerToken` (test-only key
   in `src/test/resources`). Never add a production key or real token to the repo.
 

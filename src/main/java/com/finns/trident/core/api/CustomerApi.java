@@ -34,9 +34,10 @@ import static com.finns.trident.core.ErrorCode.MALFORMED;
 import static com.finns.trident.core.ErrorCode.NOT_FOUND;
 
 /**
- * Customers and their points, for the Admin Console. Any active staff member can read them and credit or
- * debit points. Customers are shown by {@link Customer#publicId}, the id points partners know them by:
- * Keycloak owns their profile, and core keeps no name or email.
+ * Customers and their points, for the Admin Console. Any active staff member can read and search them and
+ * credit or debit points. Customers are identified by {@link Customer#publicId}, the id points partners
+ * know them by, and shown with core's copy of their display name and email ({@link Customer.Profile}),
+ * which this API is the only one to return.
  * <p>
  * Postings work like the Points API's, through {@link PointsTxn#postByStaff}: they need an
  * {@code Idempotency-Key}, scoped to the staff member, and record who made them.
@@ -57,9 +58,9 @@ public class CustomerApi {
 	String actorSub;
 
 	@RegisterForReflection
-	public record View(UUID customerId, long balance, Instant createdAt) {
+	public record View(UUID customerId, String displayName, String email, long balance, Instant createdAt) {
 		static View of(Customer.WithBalance c) {
-			return new View(c.publicId(), c.balance(), c.createdAt());
+			return new View(c.publicId(), c.displayName(), c.email(), c.balance(), c.createdAt());
 		}
 	}
 
@@ -69,7 +70,8 @@ public class CustomerApi {
 
 	/** {@code seq} is how many postings the customer has had; {@code transactions} are the latest, newest first. */
 	@RegisterForReflection
-	public record Detail(UUID customerId, long balance, long seq, Instant createdAt, List<Transaction> transactions) {
+	public record Detail(UUID customerId, String displayName, String email, long balance, long seq,
+			Instant createdAt, List<Transaction> transactions) {
 	}
 
 	/**
@@ -90,14 +92,18 @@ public class CustomerApi {
 	public record Posting(JsonNode points, String reference) {
 	}
 
-	/** Newest first. */
+	/**
+	 * Newest first. {@code q} is a whole customer id, which finds that customer, or else text to find in
+	 * display names and emails, ignoring case.
+	 */
 	@GET
-	public Response list(@RestQuery Integer page, @RestQuery Integer size) {
+	public Response list(@RestQuery String q, @RestQuery Integer page, @RestQuery Integer size) {
 		requireStaff();
 		int p = page == null ? 1 : Math.max(1, page);
 		int n = size == null ? 50 : Math.clamp(size, 1, MAX_PAGE_SIZE);
-		List<View> items = Customer.withBalances(p - 1, n).stream().map(View::of).toList();
-		return PointsApi.noStore(Response.ok(new Page(items, Customer.count(), p, n)));
+		Customer.Search search = search(q);
+		List<View> items = Customer.withBalances(search, p - 1, n).stream().map(View::of).toList();
+		return PointsApi.noStore(Response.ok(new Page(items, Customer.count(search), p, n)));
 	}
 
 	@GET
@@ -109,8 +115,9 @@ public class CustomerApi {
 		List<Transaction> transactions = PointsTxn.history(customer, HISTORY_LIMIT).stream()
 				.map(l -> Transaction.of(l.posted(), l.staffId(), l.staffEmail()))
 				.toList();
-		return PointsApi.noStore(Response.ok(new Detail(customer.publicId, account.map(a -> a.balance).orElse(0L),
-				account.map(a -> a.seq).orElse(0L), customer.createdAt, transactions)));
+		return PointsApi.noStore(Response.ok(new Detail(customer.publicId, customer.displayName, customer.email,
+				account.map(a -> a.balance).orElse(0L), account.map(a -> a.seq).orElse(0L), customer.createdAt,
+				transactions)));
 	}
 
 	@POST
@@ -157,6 +164,15 @@ public class CustomerApi {
 	private Staff requireStaff() {
 		if (actorSub == null || actorSub.isBlank()) throw new BusinessException(FORBIDDEN);
 		return Staff.findBySub(actorSub).filter(s -> s.active).orElseThrow(() -> new BusinessException(FORBIDDEN));
+	}
+
+	private static Customer.Search search(String q) {
+		if (q == null || q.isBlank()) return Customer.Search.ALL;
+		String text = q.strip();
+		return PointsApi.parseUuid(text)
+				.map(id -> new Customer.Search(id, null))
+				.orElseGet(() -> new Customer.Search(null,
+						"%" + StaffApi.escapeLike(text.toLowerCase(Locale.ROOT)) + "%"));
 	}
 
 	private static Customer find(String customerId) {

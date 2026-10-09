@@ -65,6 +65,48 @@ class QrApiTest {
 	}
 
 	@Test
+	void keepsTheProfileFromTheLatestToken() {
+		issueWith(c -> c.claim("name", " Dewi Lestari ").claim("email", "dewi@example.com"));
+		Customer customer = Fixtures.customers().getFirst();
+		assertEquals("Dewi Lestari", customer.displayName);
+		assertEquals("dewi@example.com", customer.email);
+
+		// Changed in Keycloak: the next request updates the copy, falling back to preferred_username.
+		issueWith(c -> c.claim("preferred_username", "dewi").claim("email", "dewi@new.example"));
+		customer = Fixtures.customers().getFirst();
+		assertEquals("dewi", customer.displayName);
+		assertEquals("dewi@new.example", customer.email);
+
+		// The token is the latest word: a claim it no longer carries clears the copy.
+		issueWith(UnaryOperator.identity());
+		customer = Fixtures.customers().getFirst();
+		assertNull(customer.displayName);
+		assertNull(customer.email);
+	}
+
+	@Test
+	void cutsAnOverlongNameAndDropsAnOverlongEmail() {
+		// 😀 is two UTF-16 chars but one character to Postgres; a cut never splits it.
+		issueWith(c -> c.claim("name", "😀".repeat(200)).claim("email", "y".repeat(400) + "@example.com"));
+		Customer customer = Fixtures.customers().getFirst();
+		assertEquals("😀".repeat(Customer.Profile.DISPLAY_NAME_MAX), customer.displayName);
+		assertNull(customer.email);
+	}
+
+	@Test
+	void dropsControlCharactersSoTheWriteCantFail() {
+		issueWith(c -> c.claim("name", "De\0wi\nLestari").claim("email", "\0\t"));
+		Customer customer = Fixtures.customers().getFirst();
+		assertEquals("DewiLestari", customer.displayName);
+		assertNull(customer.email);
+	}
+
+	private static void issueWith(UnaryOperator<JwtClaimsBuilder> tweak) {
+		given().auth().oauth2(Fixtures.customerToken(CUSTOMER_SUB, tweak)).post("/api/v1/app/qrs").then()
+				.statusCode(201);
+	}
+
+	@Test
 	void refusesARequestWithoutAToken() {
 		given().post("/api/v1/app/qrs").then().statusCode(401);
 		// Unknown paths too, so callers can't probe which endpoints exist.

@@ -111,7 +111,7 @@ class PointsFeedTest {
 		CountDownLatch written = new CountDownLatch(1);
 		CountDownLatch release = new CountDownLatch(1);
 		CompletableFuture<Void> slow = CompletableFuture.runAsync(() -> QuarkusTransaction.requiringNew().run(() -> {
-			Customer.ofSubject("sub-slow", Instant.now());
+			Customer.ofSubject("sub-slow", new Customer.Profile(null, null), Instant.now());
 			written.countDown();
 			try {
 				assertTrue(release.await(30, TimeUnit.SECONDS));

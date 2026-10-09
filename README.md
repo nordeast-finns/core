@@ -74,8 +74,8 @@ wording.
 | `PUT /api/v1/admin/staff/{id}` | Update (`If-Match`). |
 | `DELETE /api/v1/admin/staff/{id}/link` | Unlink the JumpCloud subject (`If-Match`). |
 | `DELETE /api/v1/admin/staff/{id}` | Delete (`If-Match`). The events are kept. |
-| `GET /api/v1/admin/customers` | Every customer with their points, newest first: `{items: [{customerId, balance, createdAt}], total, page, size}`. `customerId` is the public id; `balance` is 0 before any posting. `page` (1-based), `size` (≤ 200). Any active staff member. |
-| `GET /api/v1/admin/customers/{customerId}` | `{customerId, balance, seq, createdAt, transactions}`: the latest 100 transactions, newest first, each like the Points API's (without `customerId` and `seq`) plus `staffId` and `staffEmail` (null for the Points API's; `staffEmail` also once the staff member is deleted). Any active staff member. |
+| `GET /api/v1/admin/customers` | Customers with their points, newest first: `{items: [{customerId, displayName, email, balance, createdAt}], total, page, size}`. `customerId` is the public id; `displayName` and `email` are core's copy (see [Customers](#customers)), null if unknown; `balance` is 0 before any posting. `q` is a whole customer id (that customer) or text to find in display names and emails, ignoring case. `page` (1-based), `size` (≤ 200). Any active staff member. |
+| `GET /api/v1/admin/customers/{customerId}` | `{customerId, displayName, email, balance, seq, createdAt, transactions}`: the latest 100 transactions, newest first, each like the Points API's (without `customerId` and `seq`) plus `staffId` and `staffEmail` (null for the Points API's; `staffEmail` also once the staff member is deleted). Any active staff member. |
 | `POST /api/v1/admin/customers/{customerId}/credits` | Staff adjustment: `{points, reference?}` with `Idempotency-Key` → `201` transaction. Any active staff member; see [Points](#points). |
 | `POST /api/v1/admin/customers/{customerId}/debits` | Same, or `409 insufficient_points`. |
 
@@ -86,6 +86,13 @@ wording.
 A **customer** signs in to the customer-facing apps with Keycloak (realm `finns`, public client
 `trident-app`). Keycloak owns their account and profile; core keeps a `customer` row per Keycloak
 subject (`sub`), created on their first authenticated request, so other rows can point at them.
+
+The row also keeps a copy of the customer's display name (`name` claim, else `preferred_username`) and
+`email`, so staff can see and search customers in the Admin Console. It's a cache of the access token's
+claims, refreshed by every request that resolves the customer (issuing a QR or handoff code), so a
+change in Keycloak shows once the customer next uses the app, and a claim the token no longer carries
+clears it. A name that's too long is cut; an email that's too long is dropped, since a cut one would be
+wrong. Only the Admin API returns it: never the Points or Gate APIs, the points feed or logs.
 
 Everything under `/api/v1/app/` needs `Authorization: Bearer <access token>`, including unknown
 paths (401, empty body), checked before routing. Core accepts only access tokens that:

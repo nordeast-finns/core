@@ -56,6 +56,9 @@ class HandoffApiTest {
 		assertEquals("kc-session-1", row.keycloakSid);
 		assertEquals("Dewi Lestari", row.displayName);
 		assertEquals("dewi@example.com", row.email);
+		// And refreshes the customer's own copy, for the Admin Console.
+		assertEquals("Dewi Lestari", Fixtures.customers().getFirst().displayName);
+		assertEquals("dewi@example.com", Fixtures.customers().getFirst().email);
 	}
 
 	@Test

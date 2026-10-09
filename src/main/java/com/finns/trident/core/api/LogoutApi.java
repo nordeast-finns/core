@@ -31,7 +31,7 @@ public class LogoutApi {
 	public Response logout() {
 		String sub = token.getSubject();
 		if (sub == null || sub.isBlank()) throw new NotAuthorizedException("Bearer");
-		String sid = token.getClaim("sid") instanceof String s && !s.isBlank() ? s : null;
+		String sid = AppToken.sid(token);
 		if (sid != null) Handoff.revokeSession(sid, Instant.now());
 		booking.signedOut(sub, sid);
 		return Response.noContent().build();

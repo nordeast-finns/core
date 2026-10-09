@@ -10,6 +10,7 @@ import io.restassured.response.ValidatableResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -79,7 +80,7 @@ class CustomerApiTest {
 
 	@Test
 	void listsEveryCustomerWithTheirBalanceNewestFirst() {
-		Customer older = Fixtures.customerRow("sub-older");
+		Customer older = Fixtures.customerRow("sub-older", "Dewi Lestari", "dewi@example.com");
 		Customer newer = Fixtures.customerRow("sub-newer");
 		partnerCredit(older, "k1", 120);
 		partnerCredit(older, "k2", 30);
@@ -90,8 +91,55 @@ class CustomerApiTest {
 				.body("items.customerId", equalTo(List.of(newer.publicId.toString(), older.publicId.toString())))
 				.body("items.balance", equalTo(List.of(0, 150)))
 				.body("items[0].createdAt", notNullValue())
+				.body("items.displayName", equalTo(Arrays.asList(null, "Dewi Lestari")))
+				.body("items.email", equalTo(Arrays.asList(null, "dewi@example.com")))
 				// Only the public id: never the internal id or the Keycloak subject.
-				.body("items[0].keySet()", equalTo(Set.of("customerId", "balance", "createdAt")));
+				.body("items[0].keySet()", equalTo(Set.of("customerId", "displayName", "email", "balance", "createdAt")));
+	}
+
+	@Test
+	void searchesNamesAndEmailsIgnoringCase() {
+		Customer dewi = Fixtures.customerRow("sub-dewi", "Dewi Lestari", "dewi@example.com");
+		Customer budi = Fixtures.customerRow("sub-budi", "Budi", "budi.santoso@mail.example");
+		Fixtures.customerRow("sub-none");
+
+		search("lestari").body("total", equalTo(1)).body("items.customerId", equalTo(List.of(dewi.publicId.toString())));
+		search("  SANTOSO ").body("items.customerId", equalTo(List.of(budi.publicId.toString())));
+		search("example").body("total", equalTo(2))
+				.body("items.customerId", equalTo(List.of(budi.publicId.toString(), dewi.publicId.toString())));
+		search("nobody").body("total", equalTo(0)).body("items", hasSize(0));
+		search("").body("total", equalTo(3));
+	}
+
+	@Test
+	void searchTreatsWildcardsAsText() {
+		Fixtures.customerRow("sub-a", "100% Dewi", "a_b@example.com");
+		Fixtures.customerRow("sub-b", "1000 Budi", "ab@example.com");
+		search("100%").body("items.displayName", equalTo(List.of("100% Dewi")));
+		search("a_b").body("items.displayName", equalTo(List.of("100% Dewi")));
+		search("!").body("total", equalTo(0));
+	}
+
+	@Test
+	void searchFindsACustomerById() {
+		Customer dewi = Fixtures.customerRow("sub-dewi", "Dewi", null);
+		Fixtures.customerRow("sub-budi", "Budi", null);
+		search(dewi.publicId.toString().toUpperCase()).body("total", equalTo(1))
+				.body("items.customerId", equalTo(List.of(dewi.publicId.toString())));
+		search("0199c3a4-5b6e-7f80-9a1b-2c3d4e5f6a7b").body("total", equalTo(0));
+	}
+
+	@Test
+	void searchPages() {
+		Customer older = Fixtures.customerRow("sub-a", "Dewi A", null);
+		Fixtures.customerRow("sub-b", "Dewi B", null);
+		Fixtures.customerRow("sub-c", "Budi", null);
+		as(STAFF_SUB).queryParam("q", "dewi").queryParam("size", 1).queryParam("page", 2).get(PATH).then()
+				.body("total", equalTo(2)).body("items.customerId", equalTo(List.of(older.publicId.toString())));
+	}
+
+	private static ValidatableResponse search(String q) {
+		return as(STAFF_SUB).queryParam("q", q).get(PATH).then().statusCode(200);
 	}
 
 	@Test
@@ -108,9 +156,10 @@ class CustomerApiTest {
 
 	@Test
 	void detailOfACustomerWithoutPostings() {
-		Customer customer = Fixtures.customerRow("sub-c");
+		Customer customer = Fixtures.customerRow("sub-c", "Dewi Lestari", "dewi@example.com");
 		detail(customer).statusCode(200).header("Cache-Control", "no-store")
 				.body("customerId", equalTo(customer.publicId.toString()))
+				.body("displayName", equalTo("Dewi Lestari")).body("email", equalTo("dewi@example.com"))
 				.body("balance", equalTo(0)).body("seq", equalTo(0))
 				.body("createdAt", notNullValue())
 				.body("transactions", hasSize(0));

@@ -142,9 +142,15 @@ public final class Fixtures {
 		return QuarkusTransaction.requiringNew().call(() -> StaffEvent.latestFor(staffId, 100));
 	}
 
-	/** Inserts a customer directly. */
+	/** Inserts a customer directly, without a display name or email. */
 	public static Customer customerRow(String sub) {
-		return QuarkusTransaction.requiringNew().call(() -> Customer.ofSubject(sub, Instant.now()));
+		return customerRow(sub, null, null);
+	}
+
+	/** Inserts a customer directly, as their first request with these claims would. */
+	public static Customer customerRow(String sub, String displayName, String email) {
+		return QuarkusTransaction.requiringNew()
+				.call(() -> Customer.ofSubject(sub, new Customer.Profile(displayName, email), Instant.now()));
 	}
 
 	/**
