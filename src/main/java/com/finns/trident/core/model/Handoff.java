@@ -20,8 +20,8 @@ import java.util.UUID;
  * session. Only the code's hash is stored.
  * <p>
  * It carries the customer's display name and email only so booking can say who it is about to sign in,
- * which is why they are cleared once the code is used or revoked. They are the token's, like the copy
- * {@link Customer.Profile} keeps for the Admin Console.
+ * which is why they are cleared once the code is used or revoked. They are the app's token's, which
+ * the customer just signed in with; the {@link Customer}'s own copy comes from Keycloak.
  */
 @Entity
 public class Handoff extends PanacheEntityBase {

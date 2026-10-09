@@ -94,7 +94,7 @@ class CustomerApiTest {
 				.body("items.displayName", equalTo(Arrays.asList(null, "Dewi Lestari")))
 				.body("items.email", equalTo(Arrays.asList(null, "dewi@example.com")))
 				// Only the public id: never the internal id or the Keycloak subject.
-				.body("items[0].keySet()", equalTo(Set.of("customerId", "displayName", "email", "balance", "createdAt")));
+				.body("items[0].keySet()", equalTo(Set.of("customerId", "displayName", "email", "deletedAt", "balance", "createdAt")));
 	}
 
 	@Test

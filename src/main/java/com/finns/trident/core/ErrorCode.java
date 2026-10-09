@@ -20,6 +20,8 @@ public enum ErrorCode {
 	IDEMPOTENCY_MISMATCH("idempotency_mismatch", 422),
 	PRECONDITION_REQUIRED("precondition_required", 428),
 	RATE_LIMITED("rate_limited", 429),
+	/** A service core depends on (Keycloak) couldn't be reached; try again. */
+	UNAVAILABLE("unavailable", 503),
 	;
 
 	public final String code;

@@ -1,5 +1,6 @@
 package com.finns.trident.core.model;
 
+import com.finns.trident.core.KeycloakUsers;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -10,33 +11,23 @@ import jakarta.persistence.TypedQuery;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static jakarta.persistence.GenerationType.IDENTITY;
 
 /**
- * A customer of the customer-facing apps. They sign in with Keycloak (realm {@code finns}), which owns
- * their profile. core keeps the subject, so other rows can point at the customer, and a copy of their
- * display name and email for the Admin Console (see {@link Profile}).
+ * A customer of the customer-facing apps: every user of Keycloak's realm {@code finns}, which owns their
+ * account. core keeps the subject, so other rows can point at the customer, and a copy of their display
+ * name and email for the Admin Console, kept in sync with Keycloak by {@link #sync} alone.
  * <p>
  * Every customer is also a points member: there is no separate enrolment (see {@link PointsTxn}).
  */
 @Entity
 public class Customer extends PanacheEntityBase {
-	/**
-	 * The display name and email from the customer's verified access token; either may be null. Only a
-	 * cache of Keycloak's, refreshed by {@link #ofSubject}, and shown only on the Admin API: never on the
-	 * Points or Gate APIs, in the points feed or in logs.
-	 */
-	public record Profile(String displayName, String email) {
-		/** The longest values kept, matching the columns, so an odd claim can't fail the write. */
-		public static final int DISPLAY_NAME_MAX = 128;
-
-		public static final int EMAIL_MAX = 320;
-	}
-
 	/** A customer with their points balance, which is 0 before their first posting. */
-	public record WithBalance(UUID publicId, String displayName, String email, long balance, Instant createdAt) {
+	public record WithBalance(UUID publicId, String displayName, String email, Instant keycloakDeletedAt,
+			long balance, Instant createdAt) {
 	}
 
 	/**
@@ -62,45 +53,84 @@ public class Customer extends PanacheEntityBase {
 	@Column(nullable = false, insertable = false, updatable = false)
 	public UUID publicId;
 
-	/** From {@link Profile}: as fresh as the customer's latest request, and null if the token had none. */
+	/**
+	 * Keycloak's, as {@link KeycloakUsers.User} has it; null until the first sync. Shown only on the Admin
+	 * API: never on the Points or Gate APIs, in the points feed or in logs. Only {@link #sync} writes them,
+	 * hence not insertable or updatable here.
+	 */
+	@Column(insertable = false, updatable = false)
 	public String displayName;
 
+	@Column(insertable = false, updatable = false)
 	public String email;
+
+	/** When core found the Keycloak user gone; null while it exists. */
+	@Column(insertable = false, updatable = false)
+	public Instant keycloakDeletedAt;
 
 	@Column(nullable = false)
 	public Instant createdAt;
 
 	/**
-	 * The customer with this Keycloak subject, created on their first request, with their profile from
-	 * this request's token. Looked up first, since a skipped insert still uses up an id; the insert skips
-	 * a row that appeared meanwhile, so two first requests at once can't both create one. The request that
-	 * creates it also adds it to the points feed.
-	 * <p>
-	 * The token is the latest word on the profile, so a claim it lacks clears the copy. The row is only
-	 * written when the profile changed.
+	 * The customer with this Keycloak subject, created if it's new: usually by {@link #sync} as they sign
+	 * up, else by their first request. Looked up first, since a skipped insert still uses up an id; the
+	 * insert skips a row that appeared meanwhile, so two at once can't both create one. Whatever creates it
+	 * also adds it to the points feed.
 	 */
-	public static Customer ofSubject(String keycloakSub, Profile profile, Instant now) {
+	public static Customer ofSubject(String keycloakSub, Instant now) {
 		Optional<Customer> existing = find("keycloakSub", keycloakSub).firstResultOptional();
-		if (existing.isPresent()) return existing.get().withProfile(profile);
+		if (existing.isPresent()) return existing.get();
 		int created = getEntityManager()
-				.createNativeQuery("""
-						insert into customer (keycloak_sub, display_name, email, created_at) values (?1, ?2, ?3, ?4)
-						on conflict (keycloak_sub) do nothing""")
+				.createNativeQuery("insert into customer (keycloak_sub, created_at) values (?1, ?2) on conflict (keycloak_sub) do nothing")
 				.setParameter(1, keycloakSub)
-				.setParameter(2, profile.displayName())
-				.setParameter(3, profile.email())
-				.setParameter(4, now)
+				.setParameter(2, now)
 				.executeUpdate();
 		Customer customer = find("keycloakSub", keycloakSub).singleResult();
 		if (created == 1) PointsEvent.customerCreated(customer.id, now);
-		return customer.withProfile(profile);
+		return customer;
 	}
 
-	/** Hibernate writes the row only if this changes it. */
-	private Customer withProfile(Profile profile) {
-		displayName = profile.displayName();
-		email = profile.email();
-		return this;
+	/**
+	 * Makes core's copy of Keycloak user {@code keycloakSub} what a fetch started at {@code fetchedAt}
+	 * found: {@code user}, creating the customer if needed, or no user, which clears the copy and marks the
+	 * customer deleted (a deleted user never becomes a customer). Lands only if no fetch that started later
+	 * has landed already, so fetches finishing out of order can't bring back an older copy: every change in
+	 * Keycloak causes a fetch that starts after it. False when it didn't land, or there's no such customer.
+	 */
+	public static boolean sync(String keycloakSub, Optional<KeycloakUsers.User> user, Instant fetchedAt, Instant now) {
+		if (user.isPresent()) {
+			ofSubject(keycloakSub, now);
+			return getEntityManager().createNativeQuery("""
+					update customer set display_name = ?2, email = ?3, keycloak_deleted_at = null, profile_fetched_at = ?4
+					where keycloak_sub = ?1 and (profile_fetched_at is null or profile_fetched_at < ?4)""")
+					.setParameter(1, keycloakSub)
+					.setParameter(2, user.get().displayName())
+					.setParameter(3, user.get().email())
+					.setParameter(4, fetchedAt)
+					.executeUpdate() == 1;
+		}
+		return getEntityManager().createNativeQuery("""
+				update customer set display_name = null, email = null, profile_fetched_at = ?2,
+				    keycloak_deleted_at = coalesce(keycloak_deleted_at, ?3)
+				where keycloak_sub = ?1 and (profile_fetched_at is null or profile_fetched_at < ?2)""")
+				.setParameter(1, keycloakSub)
+				.setParameter(2, fetchedAt)
+				.setParameter(3, now)
+				.executeUpdate() == 1;
+	}
+
+	/**
+	 * Subjects of the customers created before {@code before} who aren't in {@code present} and aren't
+	 * known deleted: candidates for reconciliation to check with Keycloak.
+	 */
+	public static List<String> subjectsMissingFrom(Set<String> present, Instant before) {
+		return getEntityManager().createQuery("""
+				select c.keycloakSub from Customer c
+				where c.keycloakDeletedAt is null and c.createdAt < :before order by c.id""", String.class)
+				.setParameter("before", before)
+				.getResultStream()
+				.filter(sub -> !present.contains(sub))
+				.toList();
 	}
 
 	public static Optional<Customer> ofPublicId(UUID publicId) {
@@ -110,15 +140,15 @@ public class Customer extends PanacheEntityBase {
 	/** Page {@code page} (0-based) of the customers {@code search} matches, with their balance, newest first. */
 	public static List<WithBalance> withBalances(Search search, int page, int size) {
 		TypedQuery<Object[]> query = getEntityManager().createQuery("""
-				select c.publicId, c.displayName, c.email, coalesce(a.balance, 0L), c.createdAt
+				select c.publicId, c.displayName, c.email, c.keycloakDeletedAt, coalesce(a.balance, 0L), c.createdAt
 				from Customer c left join PointsAccount a on a.customerId = c.id
 				""" + where(search) + " order by c.createdAt desc, c.id desc", Object[].class);
 		return bind(query, search)
 				.setFirstResult(page * size)
 				.setMaxResults(size)
 				.getResultStream()
-				.map(r -> new WithBalance((UUID) r[0], (String) r[1], (String) r[2], ((Number) r[3]).longValue(),
-						(Instant) r[4]))
+				.map(r -> new WithBalance((UUID) r[0], (String) r[1], (String) r[2], (Instant) r[3],
+						((Number) r[4]).longValue(), (Instant) r[5]))
 				.toList();
 	}
 

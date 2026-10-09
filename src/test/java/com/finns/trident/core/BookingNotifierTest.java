@@ -112,12 +112,12 @@ class BookingNotifierTest {
 
 	@Test
 	void sendsTheRevokeTokenOnlyOverHttpsOrToLocalhost() {
-		assertTrue(BookingNotifier.isSafe(URI.create("https://booking.example.com")));
-		assertTrue(BookingNotifier.isSafe(URI.create("http://localhost:8787")));
-		assertTrue(BookingNotifier.isSafe(URI.create("http://127.0.0.1:8787")));
-		assertFalse(BookingNotifier.isSafe(URI.create("http://booking.example.com")));
-		assertFalse(BookingNotifier.isSafe(URI.create("http://localhost.example.com")));
-		assertFalse(BookingNotifier.isSafe(URI.create("ftp://localhost")));
+		assertTrue(SafeUrls.isSafe(URI.create("https://booking.example.com")));
+		assertTrue(SafeUrls.isSafe(URI.create("http://localhost:8787")));
+		assertTrue(SafeUrls.isSafe(URI.create("http://127.0.0.1:8787")));
+		assertFalse(SafeUrls.isSafe(URI.create("http://booking.example.com")));
+		assertFalse(SafeUrls.isSafe(URI.create("http://localhost.example.com")));
+		assertFalse(SafeUrls.isSafe(URI.create("ftp://localhost")));
 	}
 
 	@Test

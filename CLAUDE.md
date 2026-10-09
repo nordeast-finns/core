@@ -50,15 +50,32 @@ See README.md for running, configuration and the Admin API.
   Never by email or name: Keycloak owns those. Read the token's other claims through `AppToken`, which
   makes them safe to write (no control characters, cut to the column) and reads each the same way
   everywhere.
-- core keeps a customer's display name and email in two places only. `customer.display_name` and
-  `email` (`Customer.Profile`) are a cache of the token's claims, refreshed by every request that
-  resolves the customer, so staff can see and search customers. Keycloak wins: never let anyone edit
-  the copy or identify a customer by it, and return it only on the Admin API, never on the Points or
-  Gate APIs, in the points feed or in logs. A `handoff` row has them only until the code is redeemed,
-  revoked or expired (at most `finns.booking.handoff-ttl` plus a minute, then `HandoffPurge` clears
-  them). Don't copy them anywhere else.
+- core keeps a customer's display name and email in two places only: the customer's copy of their
+  Keycloak account (see Keycloak sync rules), and a `handoff` row, which takes them from the token and
+  keeps them only until the code is redeemed, revoked or expired (at most `finns.booking.handoff-ttl`
+  plus a minute, then `HandoffPurge` clears them). Don't copy them anywhere else.
 - Tests sign customer tokens with `Fixtures.customer(sub)` / `Fixtures.customerToken` (test-only key
   in `src/test/resources`). Never add a production key or real token to the repo.
+
+## Keycloak sync rules
+
+- Every user of realm `finns` is a customer, and `customer.display_name` and `email` are an exact copy
+  of their Keycloak account, so staff can see and search customers. Keycloak owns them: never let
+  anyone edit the copy, never identify a customer by it, and never write it from a token or a request
+  (a token can be minutes older than the account). Only `Customer.sync` writes it.
+- core's Keycloak extension (`keycloak-extension/`, setup in `keycloak-extension/manual-keycloak.md`)
+  posts only the user's id to `/api/v1/keycloak/user-changes` (`KeycloakApiFilter`, the extension's
+  bearer token) after each change commits. core then reads the user itself (`KeycloakUsers`, the
+  `finns-core-sync` service account, `view-users` only), so a notice can't carry a wrong copy. Keep it
+  that way. `CustomerSync.reconcile` compares every user on a schedule, for lost notices.
+- Read Keycloak before the transaction that writes, never inside it. `Customer.sync` lands only if its
+  fetch started later than the stored one (`profile_fetched_at`), so out-of-order fetches can't bring
+  back an old copy. Keep that guard on every write of the copy.
+- A deleted Keycloak user keeps their customer row (points and check-ins point at it) without the
+  name or email, with `keycloak_deleted_at`; a deleted user never becomes a customer.
+- Return the copy only on the Admin API: never on the Points or Gate APIs, in the points feed or in
+  logs. Log user ids at most.
+- Tests use `FakeKeycloak` (token endpoint and Admin API users at `%test.finns.keycloak.issuer`).
 
 ## Booking API and handoff rules
 

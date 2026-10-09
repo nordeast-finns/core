@@ -15,7 +15,6 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Tells the booking website that a customer signed out of the app, so it signs them out too, everywhere.
@@ -34,19 +33,12 @@ public class BookingNotifier {
 	@Inject
 	ObjectMapper mapper;
 
-	/** Hosts that may be reached over plain http, for local runs; anywhere else the revoke token needs https. */
-	private static final Set<String> LOCAL_HOSTS = Set.of("localhost", "127.0.0.1", "[::1]");
-
 	private final HttpClient client = HttpClient.newBuilder().connectTimeout(TIMEOUT).build();
 
 	/** Fails startup rather than ever sending the revoke token in the clear. */
 	void checkUrl(@Observes StartupEvent event) {
 		URI url = config.booking().url();
-		if (!isSafe(url)) throw new IllegalStateException("finns.booking.url must be https (http only for localhost): " + url);
-	}
-
-	static boolean isSafe(URI url) {
-		return "https".equals(url.getScheme()) || "http".equals(url.getScheme()) && LOCAL_HOSTS.contains(url.getHost());
+		if (!SafeUrls.isSafe(url)) throw new IllegalStateException("finns.booking.url must be https (http only for localhost): " + url);
 	}
 
 	/**

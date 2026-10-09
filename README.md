@@ -74,8 +74,8 @@ wording.
 | `PUT /api/v1/admin/staff/{id}` | Update (`If-Match`). |
 | `DELETE /api/v1/admin/staff/{id}/link` | Unlink the JumpCloud subject (`If-Match`). |
 | `DELETE /api/v1/admin/staff/{id}` | Delete (`If-Match`). The events are kept. |
-| `GET /api/v1/admin/customers` | Customers with their points, newest first: `{items: [{customerId, displayName, email, balance, createdAt}], total, page, size}`. `customerId` is the public id; `displayName` and `email` are core's copy (see [Customers](#customers)), null if unknown; `balance` is 0 before any posting. `q` is a whole customer id (that customer) or text to find in display names and emails, ignoring case. `page` (1-based), `size` (≤ 200). Any active staff member. |
-| `GET /api/v1/admin/customers/{customerId}` | `{customerId, displayName, email, balance, seq, createdAt, transactions}`: the latest 100 transactions, newest first, each like the Points API's (without `customerId` and `seq`) plus `staffId` and `staffEmail` (null for the Points API's; `staffEmail` also once the staff member is deleted). Any active staff member. |
+| `GET /api/v1/admin/customers` | Customers with their points, newest first: `{items: [{customerId, displayName, email, deletedAt, balance, createdAt}], total, page, size}`. `customerId` is the public id; `displayName` and `email` are core's copy of the Keycloak account (see [Keycloak sync](#keycloak-sync)), null if it has none; `deletedAt` is when core found the account deleted, else null; `balance` is 0 before any posting. `q` is a whole customer id (that customer) or text to find in display names and emails, ignoring case. `page` (1-based), `size` (≤ 200). Any active staff member. |
+| `GET /api/v1/admin/customers/{customerId}` | `{customerId, displayName, email, deletedAt, balance, seq, createdAt, transactions}`: the latest 100 transactions, newest first, each like the Points API's (without `customerId` and `seq`) plus `staffId` and `staffEmail` (null for the Points API's; `staffEmail` also once the staff member is deleted). Any active staff member. |
 | `POST /api/v1/admin/customers/{customerId}/credits` | Staff adjustment: `{points, reference?}` with `Idempotency-Key` → `201` transaction. Any active staff member; see [Points](#points). |
 | `POST /api/v1/admin/customers/{customerId}/debits` | Same, or `409 insufficient_points`. |
 
@@ -84,15 +84,11 @@ wording.
 ## Customers
 
 A **customer** signs in to the customer-facing apps with Keycloak (realm `finns`, public client
-`trident-app`). Keycloak owns their account and profile; core keeps a `customer` row per Keycloak
-subject (`sub`), created on their first authenticated request, so other rows can point at them.
-
-The row also keeps a copy of the customer's display name (`name` claim, else `preferred_username`) and
-`email`, so staff can see and search customers in the Admin Console. It's a cache of the access token's
-claims, refreshed by every request that resolves the customer (issuing a QR or handoff code), so a
-change in Keycloak shows once the customer next uses the app, and a claim the token no longer carries
-clears it. A name that's too long is cut; an email that's too long is dropped, since a cut one would be
-wrong. Only the Admin API returns it: never the Points or Gate APIs, the points feed or logs.
+`trident-app`). Keycloak owns their account and profile. Every user of the realm is a customer: core
+keeps a `customer` row per Keycloak subject (`sub`), created when they sign up (see
+[Keycloak sync](#keycloak-sync)), or on their first authenticated request if core hadn't heard yet, so
+other rows can point at them. The row also keeps an exact copy of their display name and email, so staff
+can see and search customers in the Admin Console.
 
 Everything under `/api/v1/app/` needs `Authorization: Bearer <access token>`, including unknown
 paths (401, empty body), checked before routing. Core accepts only access tokens that:
@@ -107,6 +103,40 @@ or the Keycloak subject.
 
 Keycloak isn't needed to start: if it's unreachable, core starts anyway and connects on the first
 customer request (which fails until Keycloak is back).
+
+## Keycloak sync
+
+The customer's display name and email in core are an exact copy of their Keycloak account, updated
+within about a second of any change:
+
+- **core's Keycloak extension** (`keycloak-extension/`, installed in Keycloak; setup and updates in
+  [`keycloak-extension/manual-keycloak.md`](keycloak-extension/manual-keycloak.md)) listens to realm
+  `finns`. After a sign-up, sign-in, profile or email change, email verification, account deletion, or
+  any admin change to a user commits, it posts `{userId}` to `POST /api/v1/keycloak/user-changes`
+  (bearer `FINNS_KEYCLOAK_WEBHOOK_TOKEN`), asynchronously, retrying after 1, 5 and 30 seconds while
+  core can't be reached or answers 5xx. Signing out changes nothing and sends nothing.
+- **core reads the user itself** from Keycloak's Admin API as the service account of the confidential
+  client `finns-core-sync` (realm-management role `view-users` only), so the notice carries no data. It
+  answers `204` once the copy matches, `503 unavailable` if Keycloak couldn't be read (the extension
+  retries), and creates the customer if they're new.
+- The display name is built as Keycloak builds the `name` claim: first and last name, leaving out an
+  empty one, joined by a space; null if both are empty. Values are copied exactly, never cut.
+- A write lands only if its Keycloak fetch started later than the one already stored
+  (`profile_fetched_at`), so notices handled out of order can't bring back an older copy.
+- A deleted Keycloak user keeps their customer row (points and check-ins point at it) without a name or
+  email, and with `keycloak_deleted_at`. A deleted user never becomes a customer, nor does a client's
+  service account.
+- **Reconciliation** (`finns.keycloak.reconcile-every`, 10 minutes, first run 1 minute after startup)
+  reads every user of the realm, syncs each, creates missing customers, then checks one by one the
+  customers it didn't see and marks those Keycloak no longer has. It copies whatever a lost notice
+  missed, and filled in existing customers when this shipped.
+- Only the Admin API returns the copy: never the Points or Gate APIs, the points feed or logs.
+- Requests never write it: issuing QR or handoff codes and signing out leave it as it is. A handoff
+  still takes the name and email for the booking website from the app's token.
+
+| Method and path | Auth | Purpose |
+|---|---|---|
+| `POST /api/v1/keycloak/user-changes` | `Bearer <FINNS_KEYCLOAK_WEBHOOK_TOKEN>` | `{userId}`: the Keycloak user changed. `204`, `400 malformed`, or `503 unavailable`. |
 
 ## Booking website handoff
 
@@ -266,6 +296,9 @@ to server. Responses are `Cache-Control: no-store`.
 | `FINNS_BOOKING_REVOKE_TOKEN` | At least 32 characters. What core sends the booking website when a customer signs out of the app; different from every other token. Must equal the website's `REVOKE_TOKEN` secret. Startup fails if it's missing or short. |
 | `FINNS_POINTS_API_TOKEN` | At least 32 characters. Points partners' (Sota's) bearer token for `/api/v1/points/*`; different from every other token. Startup fails if it's missing or short. |
 | `FINNS_BOOKING_URL` | The booking website's origin, for example `https://trident-poc-booking.juna.workers.dev`. Startup fails if it's missing, or if it isn't https (plain http is allowed for `localhost` only). |
+| `FINNS_KEYCLOAK_WEBHOOK_TOKEN` | At least 32 characters, different from every other token. What core's Keycloak extension sends on `/api/v1/keycloak/*`; must equal the extension's `token`. Startup fails if it's missing or short. |
+| `FINNS_KEYCLOAK_CLIENT_SECRET` | The secret of Keycloak client `finns-core-sync` (realm `finns`, service account with `view-users`), which core reads users as. The issuer is `FINNS_AUTH_ISSUER`'s. Startup fails if it's missing. |
+| `FINNS_KEYCLOAK_RECONCILE_EVERY` | Optional. How often reconciliation runs, as a duration (`10m` by default) or `off`. In dev it's `off` unless set. |
 | `FINNS_CORS_ORIGINS` | Optional. Browser origins allowed to call core, as a Quarkus CORS origin list (`/regex/` entries allowed). Defaults to the app's `trident-app-web` Worker and its preview aliases on `workers.dev`. |
 | `FINNS_STAFF_BOOTSTRAP_ADMINS` | Overrides the default bootstrap admin, `thomas@nordeast.id`. Comma-separated. |
 

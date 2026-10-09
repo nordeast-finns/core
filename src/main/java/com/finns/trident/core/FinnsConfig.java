@@ -28,6 +28,8 @@ public interface FinnsConfig {
 
 	Qr qr();
 
+	Keycloak keycloak();
+
 	interface AdminApi {
 		/** Bearer token the Admin Console Worker sends on every {@code /api/v1/admin/*} call. */
 		@Size(min = 32)
@@ -80,5 +82,25 @@ public interface FinnsConfig {
 		/** How long an issued QR code can be checked in. */
 		@WithDefault("60s")
 		Duration ttl();
+	}
+
+	/** Keeping each customer's name and email in sync with their Keycloak account. */
+	interface Keycloak {
+		/** The realm customers sign in to, for example {@code https://auth.example.com/realms/finns}. */
+		URI issuer();
+
+		/** Bearer token core's Keycloak extension sends on every {@code /api/v1/keycloak/*} call. */
+		@Size(min = 32)
+		String webhookToken();
+
+		/** The confidential client whose service account reads users (role {@code view-users} only). */
+		@WithDefault("finns-core-sync")
+		String clientId();
+
+		String clientSecret();
+
+		/** How often every user is compared with core's copy, for any notice that was lost; "off" for never. */
+		@WithDefault("10m")
+		String reconcileEvery();
 	}
 }

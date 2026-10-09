@@ -36,8 +36,9 @@ import static com.finns.trident.core.ErrorCode.NOT_FOUND;
 /**
  * Customers and their points, for the Admin Console. Any active staff member can read and search them and
  * credit or debit points. Customers are identified by {@link Customer#publicId}, the id points partners
- * know them by, and shown with core's copy of their display name and email ({@link Customer.Profile}),
- * which this API is the only one to return.
+ * know them by, and shown with core's copy of their Keycloak display name and email, kept in sync by
+ * {@link com.finns.trident.core.CustomerSync}, which this API is the only one to return. {@code deletedAt}
+ * is when core found the Keycloak account deleted; such a customer has no name or email any more.
  * <p>
  * Postings work like the Points API's, through {@link PointsTxn#postByStaff}: they need an
  * {@code Idempotency-Key}, scoped to the staff member, and record who made them.
@@ -58,9 +59,11 @@ public class CustomerApi {
 	String actorSub;
 
 	@RegisterForReflection
-	public record View(UUID customerId, String displayName, String email, long balance, Instant createdAt) {
+	public record View(UUID customerId, String displayName, String email, Instant deletedAt, long balance,
+			Instant createdAt) {
 		static View of(Customer.WithBalance c) {
-			return new View(c.publicId(), c.displayName(), c.email(), c.balance(), c.createdAt());
+			return new View(c.publicId(), c.displayName(), c.email(), c.keycloakDeletedAt(), c.balance(),
+					c.createdAt());
 		}
 	}
 
@@ -70,8 +73,8 @@ public class CustomerApi {
 
 	/** {@code seq} is how many postings the customer has had; {@code transactions} are the latest, newest first. */
 	@RegisterForReflection
-	public record Detail(UUID customerId, String displayName, String email, long balance, long seq,
-			Instant createdAt, List<Transaction> transactions) {
+	public record Detail(UUID customerId, String displayName, String email, Instant deletedAt, long balance,
+			long seq, Instant createdAt, List<Transaction> transactions) {
 	}
 
 	/**
@@ -116,8 +119,8 @@ public class CustomerApi {
 				.map(l -> Transaction.of(l.posted(), l.staffId(), l.staffEmail()))
 				.toList();
 		return PointsApi.noStore(Response.ok(new Detail(customer.publicId, customer.displayName, customer.email,
-				account.map(a -> a.balance).orElse(0L), account.map(a -> a.seq).orElse(0L), customer.createdAt,
-				transactions)));
+				customer.keycloakDeletedAt, account.map(a -> a.balance).orElse(0L), account.map(a -> a.seq).orElse(0L),
+				customer.createdAt, transactions)));
 	}
 
 	@POST

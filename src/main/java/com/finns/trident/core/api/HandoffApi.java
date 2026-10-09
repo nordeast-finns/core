@@ -40,8 +40,8 @@ public class HandoffApi {
 	public Response issue() {
 		Instant now = Instant.now();
 		Customer customer = AppToken.customer(token, now);
-		Handoff.Issued issued = Handoff.issue(customer, AppToken.sid(token), customer.displayName,
-				customer.email, config.booking().handoffTtl(), now)
+		Handoff.Issued issued = Handoff.issue(customer, AppToken.sid(token), AppToken.name(token),
+				AppToken.email(token), config.booking().handoffTtl(), now)
 				.orElseThrow(() -> new BusinessException(ErrorCode.RATE_LIMITED));
 		logger.infof("handoff.issued handoffId=%s customerId=%d", issued.id(), customer.id);
 		return Response.status(Response.Status.CREATED)

@@ -18,6 +18,7 @@ import java.security.PrivateKey;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.UnaryOperator;
 
@@ -38,6 +39,9 @@ public final class Fixtures {
 
 	/** Matches {@code %test.finns.points.api-token}. */
 	public static final String POINTS_TOKEN = "test-only-points-token-not-a-secret-0";
+
+	/** Matches {@code %test.finns.keycloak.webhook-token}. */
+	public static final String KEYCLOAK_TOKEN = "test-only-keycloak-token-not-a-secret-0";
 
 	/** Matches {@code %test.quarkus.oidc.token.issuer}. */
 	public static final String ISSUER = "https://auth.test/realms/finns";
@@ -100,6 +104,11 @@ public final class Fixtures {
 		return points().header("Idempotency-Key", key);
 	}
 
+	/** A request core's Keycloak extension would make: authenticated, JSON. */
+	public static RequestSpecification keycloak() {
+		return given().header("Authorization", "Bearer " + KEYCLOAK_TOKEN).contentType(JSON);
+	}
+
 	/** A request a gate device would make: authenticated, JSON. */
 	public static RequestSpecification gate() {
 		return given().header("Authorization", "Bearer " + GATE_TOKEN).contentType(JSON);
@@ -142,15 +151,20 @@ public final class Fixtures {
 		return QuarkusTransaction.requiringNew().call(() -> StaffEvent.latestFor(staffId, 100));
 	}
 
-	/** Inserts a customer directly, without a display name or email. */
+	/** Inserts a customer directly, as their first request would before any sync: no name or email. */
 	public static Customer customerRow(String sub) {
-		return customerRow(sub, null, null);
+		return QuarkusTransaction.requiringNew().call(() -> Customer.ofSubject(sub, Instant.now()));
 	}
 
-	/** Inserts a customer directly, as their first request with these claims would. */
+	/** Inserts a customer directly, as a sync of their Keycloak account would. */
 	public static Customer customerRow(String sub, String displayName, String email) {
-		return QuarkusTransaction.requiringNew()
-				.call(() -> Customer.ofSubject(sub, new Customer.Profile(displayName, email), Instant.now()));
+		QuarkusTransaction.requiringNew().run(() -> Customer.sync(sub,
+				Optional.of(new KeycloakUsers.User(sub, displayName, email)), Instant.now(), Instant.now()));
+		return findCustomer(sub);
+	}
+
+	public static Customer findCustomer(String sub) {
+		return QuarkusTransaction.requiringNew().call(() -> Customer.<Customer>find("keycloakSub", sub).singleResult());
 	}
 
 	/**
