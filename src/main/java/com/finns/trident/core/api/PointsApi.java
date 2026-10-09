@@ -40,7 +40,8 @@ import static com.finns.trident.core.ErrorCode.NOT_FOUND;
 /**
  * The points ledger's API, for points partners (Sota Platforms) to credit, debit and refund customers'
  * points and keep their copy from the feed. Every path under {@link PointsApiFilter#PREFIX} needs the
- * Points API token. core itself doesn't post points.
+ * Points API token. The feed also carries staff's postings and core's own credits (reasons
+ * {@code booking} and {@code check_in}), which the partner can't refund.
  * <p>
  * Every customer is a points member, known here by {@link Customer#publicId} only. Postings need an
  * {@code Idempotency-Key}: a retry with the same key and request returns the original transaction,

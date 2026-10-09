@@ -4,6 +4,7 @@ import com.finns.trident.core.model.CheckIn;
 import com.finns.trident.core.model.Customer;
 import com.finns.trident.core.model.Handoff;
 import com.finns.trident.core.model.PointsAccount;
+import com.finns.trident.core.model.PointsTxn;
 import com.finns.trident.core.model.Qr;
 import com.finns.trident.core.model.Staff;
 import com.finns.trident.core.model.StaffEvent;
@@ -202,5 +203,15 @@ public final class Fixtures {
 
 	public static List<Customer> customers() {
 		return QuarkusTransaction.requiringNew().call(() -> Customer.<Customer>listAll());
+	}
+
+	public static List<PointsTxn> pointsTxns() {
+		return QuarkusTransaction.requiringNew().call(() -> PointsTxn.<PointsTxn>listAll());
+	}
+
+	/** The customer's points balance; 0 before their first posting. */
+	public static long balance(long customerId) {
+		return QuarkusTransaction.requiringNew()
+				.call(() -> PointsAccount.ofCustomer(customerId).map(a -> a.balance).orElse(0L));
 	}
 }

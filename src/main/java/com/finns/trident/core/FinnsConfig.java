@@ -2,6 +2,7 @@ package com.finns.trident.core;
 
 import io.smallrye.config.ConfigMapping;
 import io.smallrye.config.WithDefault;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Size;
 
 import java.net.URI;
@@ -71,6 +72,21 @@ public interface FinnsConfig {
 		/** When the ledger integrity check runs, in UTC: 02:30 in Bali. */
 		@WithDefault("0 30 18 * * ?")
 		String checkCron();
+
+		/** What core itself credits customers for (see {@code PointsTxn.earn}). */
+		Earn earn();
+
+		interface Earn {
+			/** A paid booking earns 1 point per this many rupiah of its total, rounded down. */
+			@WithDefault("10000")
+			@Min(1)
+			long bookingIdrPerPoint();
+
+			/** Points for every granted check-in; 0 earns none. */
+			@WithDefault("10")
+			@Min(0)
+			long checkIn();
+		}
 	}
 
 	interface Staff {

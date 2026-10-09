@@ -34,9 +34,9 @@ import static jakarta.persistence.EnumType.STRING;
  * enforces that, that customer balances never go negative, and that transactions and entries are never
  * changed: a mistake is undone by a refund or another posting.
  * <p>
- * {@link #post}, {@link #postByStaff} and {@link #refund} are the only writers of the ledger. Each is
- * idempotent on the caller's key: a retry of the same request returns the original transaction instead of
- * posting again. Keys are scoped per client: the Points API's, and each staff member's.
+ * {@link #post}, {@link #postByStaff}, {@link #earn} and {@link #refund} are the only writers of the ledger.
+ * Each is idempotent on the caller's key: a retry of the same request returns the original transaction
+ * instead of posting again. Keys are scoped per {@link Client}, and per staff member.
  */
 @Entity
 @Immutable
@@ -48,8 +48,24 @@ public class PointsTxn extends PanacheEntityBase {
 		REFUND,
 	}
 
+	/** Who posted a transaction. Only the partner's postings can be refunded. */
+	public enum Client {
+		/** The points partner (Sota), through the Points API. */
+		PARTNER,
+		/** A staff member, by hand in the Admin Console. */
+		STAFF,
+		/** core itself, for something the customer did at FINNS (see {@link #earn}). */
+		CORE,
+	}
+
 	/** The {@link #reason} of every posting staff make in the Admin Console. */
 	public static final String STAFF_REASON = "staff_adjustment";
+
+	/** The {@link #reason} of core's credit for a paid booking; the reference is the booking's id. */
+	public static final String BOOKING_REASON = "booking";
+
+	/** The {@link #reason} of core's credit for a granted check-in; the reference is the QR code's id. */
+	public static final String CHECK_IN_REASON = "check_in";
 
 	@Id
 	public UUID id;
@@ -74,7 +90,11 @@ public class PointsTxn extends PanacheEntityBase {
 	/** The transaction a refund reverses. */
 	public UUID refundOf;
 
-	/** The staff member who posted it in the Admin Console; null for the Points API's postings. */
+	@Enumerated(STRING)
+	@Column(nullable = false)
+	public Client client;
+
+	/** The staff member who posted it in the Admin Console; null unless {@link #client} is STAFF. */
 	public Long staffId;
 
 	@Column(nullable = false)
@@ -100,19 +120,20 @@ public class PointsTxn extends PanacheEntityBase {
 	}
 
 	/**
-	 * A transaction in a customer's history, with who posted it: {@code staffId} is null for the Points
-	 * API, and {@code staffEmail} also once that staff member is deleted.
+	 * A transaction in a customer's history, with who posted it: {@code staffId} is null unless
+	 * {@code client} is STAFF, and {@code staffEmail} also once that staff member is deleted.
 	 */
-	public record Line(Posted posted, Long staffId, String staffEmail) {
+	public record Line(Posted posted, Client client, Long staffId, String staffEmail) {
 	}
 
 	/**
-	 * Credits or debits {@code customer}. A debit that would make the balance negative fails with
-	 * {@code insufficient_points}. {@code points} is positive; {@code kind} is CREDIT or DEBIT.
+	 * Credits or debits {@code customer} as the points partner's posting, through the Points API. A debit
+	 * that would make the balance negative fails with {@code insufficient_points}. {@code points} is
+	 * positive; {@code kind} is CREDIT or DEBIT.
 	 */
 	public static Posted post(Kind kind, Customer customer, long points, String reason, String reference, String key,
 			Instant now, ZoneId zone) {
-		return post(kind, customer, points, reason, reference, null, key, now, zone);
+		return post(kind, customer, points, reason, reference, Client.PARTNER, null, key, now, zone);
 	}
 
 	/**
@@ -121,16 +142,28 @@ public class PointsTxn extends PanacheEntityBase {
 	 */
 	public static Posted postByStaff(Kind kind, Customer customer, long points, String reference, Staff staff,
 			String key, Instant now, ZoneId zone) {
-		return post(kind, customer, points, STAFF_REASON, reference, staff.id, key, now, zone);
+		return post(kind, customer, points, STAFF_REASON, reference, Client.STAFF, staff.id, key, now, zone);
+	}
+
+	/**
+	 * Credits {@code customer} as core's own posting, for something they did at FINNS: {@code reason} is
+	 * {@link #BOOKING_REASON} or {@link #CHECK_IN_REASON}, and {@code reference} the booking's or QR code's
+	 * id. Once per reason and reference: a repeat returns the original transaction. {@code points} is positive.
+	 */
+	public static Posted earn(Customer customer, long points, String reason, String reference, Instant now,
+			ZoneId zone) {
+		return post(Kind.CREDIT, customer, points, reason, reference, Client.CORE, null, reason + ":" + reference, now,
+				zone);
 	}
 
 	private static Posted post(Kind kind, Customer customer, long points, String reason, String reference,
-			Long staffId, String key, Instant now, ZoneId zone) {
+			Client client, Long staffId, String key, Instant now, ZoneId zone) {
 		if (kind == Kind.REFUND || points <= 0) throw new IllegalArgumentException();
 		byte[] hash = requestHash(kind.name(), customer.publicId.toString(), Long.toString(points), reason, reference);
-		Optional<UUID> claimed = claim(kind, customer.id, staffId, key, hash, reason, reference, null, now, zone);
+		Optional<UUID> claimed = claim(kind, customer.id, client, staffId, key, hash, reason, reference, null, now,
+				zone);
 		if (claimed.isEmpty()) {
-			return replay(staffId, key, hash)
+			return replay(client, staffId, key, hash)
 					.orElseThrow(() -> new IllegalStateException("points_txn conflict without its key"));
 		}
 		UUID id = claimed.get();
@@ -142,20 +175,22 @@ public class PointsTxn extends PanacheEntityBase {
 
 	/**
 	 * Reverses the Points API's credit or debit {@code originalId} in full. Fails with {@code not_found} if
-	 * there's no such transaction, {@code not_refundable} for a refund or a staff posting (staff correct
-	 * theirs with another posting), {@code already_refunded}, and {@code insufficient_points} when
-	 * refunding a credit whose points were spent.
+	 * there's no such transaction, {@code not_refundable} for a refund or another client's posting (staff
+	 * correct theirs with another posting; core's are final), {@code already_refunded}, and
+	 * {@code insufficient_points} when refunding a credit whose points were spent.
 	 */
 	public static Posted refund(UUID originalId, String reference, String key, Instant now, ZoneId zone) {
 		PointsTxn original = PointsTxn.<PointsTxn>findByIdOptional(originalId)
 				.orElseThrow(() -> new BusinessException(NOT_FOUND));
-		if (original.kind == Kind.REFUND || original.staffId != null) throw new BusinessException(NOT_REFUNDABLE);
+		if (original.kind == Kind.REFUND || original.client != Client.PARTNER) {
+			throw new BusinessException(NOT_REFUNDABLE);
+		}
 		byte[] hash = requestHash(Kind.REFUND.name(), originalId.toString(), reference);
-		Optional<UUID> claimed = claim(Kind.REFUND, original.customerId, null, key, hash, null, reference, originalId,
-				now, zone);
+		Optional<UUID> claimed = claim(Kind.REFUND, original.customerId, Client.PARTNER, null, key, hash, null,
+				reference, originalId, now, zone);
 		if (claimed.isEmpty()) {
 			// No transaction has this key, so the conflict was another refund of the same transaction.
-			return replay(null, key, hash).orElseThrow(() -> new BusinessException(ALREADY_REFUNDED));
+			return replay(Client.PARTNER, null, key, hash).orElseThrow(() -> new BusinessException(ALREADY_REFUNDED));
 		}
 		UUID id = claimed.get();
 		long delta = -PointsEntry.customerSide(originalId).amount;
@@ -170,13 +205,13 @@ public class PointsTxn extends PanacheEntityBase {
 	 * transaction, exists. Postgres waits for a conflicting transaction still in flight, so on empty the conflicting
 	 * row has committed and is visible.
 	 */
-	private static Optional<UUID> claim(Kind kind, long customerId, Long staffId, String key, byte[] hash,
-			String reason, String reference, UUID refundOf, Instant now, ZoneId zone) {
+	private static Optional<UUID> claim(Kind kind, long customerId, Client client, Long staffId, String key,
+			byte[] hash, String reason, String reference, UUID refundOf, Instant now, ZoneId zone) {
 		@SuppressWarnings("unchecked")
 		List<UUID> ids = getEntityManager().createNativeQuery("""
 				insert into points_txn (kind, customer_id, idempotency_key, request_hash, reason, reference, refund_of,
-				    recorded_at, business_date, staff_id)
-				values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+				    recorded_at, business_date, client, staff_id)
+				values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
 				on conflict do nothing
 				returning id""", UUID.class)
 				.setParameter(1, kind.name())
@@ -188,19 +223,20 @@ public class PointsTxn extends PanacheEntityBase {
 				.setParameter(7, refundOf)
 				.setParameter(8, now)
 				.setParameter(9, LocalDate.ofInstant(now, zone))
-				.setParameter(10, staffId)
+				.setParameter(10, client.name())
+				.setParameter(11, staffId)
 				.getResultList();
 		return ids.stream().findFirst();
 	}
 
 	/**
-	 * The transaction the client ({@code staffId}, null for the Points API) posted under {@code key}, if
-	 * any; a different request reusing the key fails.
+	 * The transaction {@code client} (and for STAFF, staff member {@code staffId}) posted under {@code key},
+	 * if any; a different request reusing the key fails.
 	 */
-	private static Optional<Posted> replay(Long staffId, String key, byte[] hash) {
+	private static Optional<Posted> replay(Client client, Long staffId, String key, byte[] hash) {
 		Optional<PointsTxn> existing = staffId == null
-				? find("staffId is null and idempotencyKey = ?1", key).firstResultOptional()
-				: find("staffId = ?1 and idempotencyKey = ?2", staffId, key).firstResultOptional();
+				? find("client = ?1 and staffId is null and idempotencyKey = ?2", client, key).firstResultOptional()
+				: find("client = ?1 and staffId = ?2 and idempotencyKey = ?3", client, staffId, key).firstResultOptional();
 		if (existing.isEmpty()) return Optional.empty();
 		if (!MessageDigest.isEqual(existing.get().requestHash, hash)) throw new BusinessException(IDEMPOTENCY_MISMATCH);
 		return Optional.of(posted(existing.get().id, true));
@@ -276,7 +312,7 @@ public class PointsTxn extends PanacheEntityBase {
 					PointsTxn t = (PointsTxn) r[0];
 					PointsEntry e = (PointsEntry) r[1];
 					return new Line(new Posted(t.id, t.kind, customer.publicId, e.amount, e.balanceAfter, e.seq,
-							t.reason, t.reference, t.refundOf, t.recordedAt, false), t.staffId, (String) r[2]);
+							t.reason, t.reference, t.refundOf, t.recordedAt, false), t.client, t.staffId, (String) r[2]);
 				})
 				.toList();
 	}

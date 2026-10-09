@@ -1,7 +1,9 @@
 package com.finns.trident.core.api;
 
 import com.finns.trident.core.Fixtures;
+import com.finns.trident.core.model.Customer;
 import com.finns.trident.core.model.Handoff;
+import com.finns.trident.core.model.PointsTxn;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -11,7 +13,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -149,5 +153,77 @@ class BookingApiTest {
 		given().contentType(JSON).body("{\"code\":\"" + code + "\"}").post("/api/v1/booking/handoffs/redeem").then().statusCode(401);
 		assertNull(Fixtures.handoffs().getFirst().usedAt);
 		given().get("/api/v1/booking/handoffs/redeem").then().statusCode(401).header("Set-Cookie", nullValue());
+	}
+
+	// --- paid bookings ---
+
+	private static io.restassured.response.ValidatableResponse booked(Object totalIdr, String bookingId) {
+		Map<String, Object> body = new HashMap<>();
+		body.put("sub", CUSTOMER_SUB);
+		body.put("bookingId", bookingId);
+		body.put("totalIdr", totalIdr);
+		return Fixtures.booking().body(body).post("/api/v1/booking/bookings").then();
+	}
+
+	@Test
+	void aPaidBookingEarnsAPointPerTenThousandRupiahOnce() {
+		booked(3_155_000, "b-1").statusCode(204).header("Cache-Control", "no-store");
+		// booking never retries today, but a repeat must not credit twice.
+		booked(3_155_000, "b-1").statusCode(204);
+
+		Customer customer = Fixtures.findCustomer(CUSTOMER_SUB);
+		assertEquals(315, Fixtures.balance(customer.id));
+		PointsTxn txn = Fixtures.pointsTxns().getFirst();
+		assertEquals(PointsTxn.Client.CORE, txn.client);
+		assertEquals(PointsTxn.BOOKING_REASON, txn.reason);
+		assertEquals("b-1", txn.reference);
+
+		booked(25_000, "b-2").statusCode(204);
+		assertEquals(317, Fixtures.balance(customer.id));
+	}
+
+	@Test
+	void aBookingUnderAPointEarnsNothing() {
+		booked(9_999, "b-1").statusCode(204);
+		booked(0, "b-2").statusCode(204);
+		assertEquals(0, Fixtures.pointsTxns().size());
+		// The customer exists, as their first request would make them.
+		assertEquals(1, Fixtures.customers().size());
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {"3.5", "\"3155000\"", "-1", "true", "{}", "99999999999999999999",
+			// 1,000,000,001 points: more than one posting can hold.
+			"10000000010000"})
+	void refusesATotalThatIsNotAWholeRupiahAmount(String totalIdr) {
+		Fixtures.booking().body("{\"sub\":\"" + CUSTOMER_SUB + "\",\"bookingId\":\"b-1\",\"totalIdr\":" + totalIdr + "}")
+				.post("/api/v1/booking/bookings").then()
+				.statusCode(422).body("code", equalTo("invalid")).body("fields.totalIdr", equalTo("invalid"));
+		assertEquals(0, Fixtures.customers().size());
+	}
+
+	@Test
+	void refusesABookingWithoutItsFields() {
+		Fixtures.booking().body("{}").post("/api/v1/booking/bookings").then().statusCode(422)
+				.body("fields.sub", equalTo("required"))
+				.body("fields.bookingId", equalTo("required"))
+				.body("fields.totalIdr", equalTo("required"));
+		Fixtures.booking().body(Map.of("sub", "has space", "bookingId", "b/1", "totalIdr", 1)).post("/api/v1/booking/bookings")
+				.then().statusCode(422)
+				.body("fields.sub", equalTo("invalid"))
+				.body("fields.bookingId", equalTo("invalid"));
+		Fixtures.booking().body(Map.of("sub", CUSTOMER_SUB, "bookingId", "b".repeat(65), "totalIdr", 1))
+				.post("/api/v1/booking/bookings").then().statusCode(422).body("fields.bookingId", equalTo("invalid"));
+		Fixtures.booking().post("/api/v1/booking/bookings").then().statusCode(400);
+		assertEquals(0, Fixtures.customers().size());
+	}
+
+	@Test
+	void onlyBookingCanReportABooking() {
+		String body = "{\"sub\":\"" + CUSTOMER_SUB + "\",\"bookingId\":\"b-1\",\"totalIdr\":3155000}";
+		given().contentType(JSON).body(body).post("/api/v1/booking/bookings").then().statusCode(401);
+		Fixtures.gate().body(body).post("/api/v1/booking/bookings").then().statusCode(401);
+		Fixtures.points().body(body).post("/api/v1/booking/bookings").then().statusCode(401);
+		assertEquals(0, Fixtures.customers().size());
 	}
 }

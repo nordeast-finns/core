@@ -3,6 +3,7 @@ package com.finns.trident.core.api;
 import com.finns.trident.core.Fixtures;
 import com.finns.trident.core.model.CheckIn;
 import com.finns.trident.core.model.Customer;
+import com.finns.trident.core.model.PointsTxn;
 import com.finns.trident.core.model.Qr;
 import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.api.BeforeEach;
@@ -53,6 +54,35 @@ class CheckInApiTest {
 			assertEquals(GATE, c.gateId);
 			assertEquals(CheckIn.Source.ONLINE, c.source);
 		});
+	}
+
+	@Test
+	void aGrantedCheckInEarnsPointsOnce() {
+		String qr = Fixtures.customer(CUSTOMER_SUB).post("/api/v1/app/qrs").then().statusCode(201).extract().path("qr");
+		Customer customer = Fixtures.customers().getFirst();
+
+		scan(qr).then().body("result", equalTo("granted"));
+		scan(qr).then().body("result", equalTo("denied"));
+
+		assertEquals(10, Fixtures.balance(customer.id));
+		PointsTxn txn = Fixtures.pointsTxns().getFirst();
+		assertEquals(PointsTxn.Client.CORE, txn.client);
+		assertEquals(PointsTxn.CHECK_IN_REASON, txn.reason);
+		assertEquals(Fixtures.qrs().getFirst().id.toString(), txn.reference);
+
+		// Every granted check-in earns, not just the first.
+		String next = Fixtures.customer(CUSTOMER_SUB).post("/api/v1/app/qrs").then().statusCode(201).extract().path("qr");
+		scan(next).then().body("result", equalTo("granted"));
+		assertEquals(20, Fixtures.balance(customer.id));
+	}
+
+	@Test
+	void aDeniedCheckInEarnsNothing() {
+		Customer customer = Fixtures.customerRow(CUSTOMER_SUB);
+		scan(Fixtures.qr(customer.id, Instant.now().minusSeconds(1), null)).then().body("result", equalTo("denied"));
+		scan(Fixtures.qr(customer.id, Instant.now().plusSeconds(30), Instant.now().minusSeconds(5)))
+				.then().body("result", equalTo("denied"));
+		assertEquals(0, Fixtures.pointsTxns().size());
 	}
 
 	@Test

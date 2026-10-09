@@ -90,6 +90,9 @@ See README.md for running, configuration and the Admin API.
 - Take the `sub` and `sid` for logout from the caller's verified token, never from the request. Notifying the
   booking website (`BookingNotifier`) is best effort and must never delay or fail the app's sign-out.
 - Core never accepts cookies and never hands the booking website an access token.
+- `POST /bookings` is the one place core takes a customer's `sub` from a request body: the booking
+  website is the authenticated caller and names the customer it signed in. It only ever credits
+  (`PointsTxn.earn`, once per `bookingId`); never let it debit, read a balance or return personal data.
 
 ## Gate API and check-in rules
 
@@ -118,19 +121,23 @@ See README.md for running, configuration and the Admin API.
   only by `Customer.publicId`. Never expose the internal id or the Keycloak subject on this API, and
   never put personal data in the ledger or the feed.
 - core decides the "who" (members and balances); the partner decides the "how" (what points are for).
-  core never posts points on its own: besides the partner, only staff adjust balances, by hand in the
-  Admin Console (`PointsTxn.postByStaff`, reason `staff_adjustment`, recording `staff_id`).
-- `PointsTxn.post`, `postByStaff` and `refund` are the only writers of the ledger. Keep the ledger double-entry
+  Every posting records its client (`points_txn.client`): `PARTNER` (the Points API), `STAFF` (by hand
+  in the Admin Console: `PointsTxn.postByStaff`, reason `staff_adjustment`, recording `staff_id`), or
+  `CORE`. core credits on its own in exactly two places, both through `PointsTxn.earn`: a paid booking
+  the booking website reports (`BookingApi`, reason `booking`) and a granted check-in (`CheckInApi`, in
+  the scan's transaction, reason `check_in`). Rates are config (`finns.points.earn.*`), not code. Add
+  a new earning rule only as another `earn` reason, never as a post on the partner's or staff's behalf.
+- `PointsTxn.post`, `postByStaff`, `earn` and `refund` are the only writers of the ledger. Keep the ledger double-entry
   (two entries summing to zero), append-only (`points_txn`, `points_entry`), and the balance change one
   conditional update (`balance + delta >= 0`) rather than read-then-write. Postgres enforces these;
   don't add a path around them, and correct mistakes with new postings.
 - Cache balances on customer accounts only, never on system accounts (one hot row for every posting).
 - Every posting needs an `Idempotency-Key`. Only successful postings are stored and replayed; a failure
-  rolls back the key too. Keys are scoped per client by `unique nulls not distinct (staff_id,
-  idempotency_key)`: the Points API's (`staff_id` null) and each staff member's. Every lookup by key
-  must filter by the client too.
-- A client never reverses another's postings: the Points API can't refund a staff posting
-  (`not_refundable`), and staff correct theirs with an opposite posting.
+  rolls back the key too. Keys are scoped per client by `unique nulls not distinct (client, staff_id,
+  idempotency_key)`: the Points API's, core's (`<reason>:<reference>`, so once per booking or QR code)
+  and each staff member's. Every lookup by key must filter by the client too.
+- A client never reverses another's postings: the Points API can refund only `PARTNER` postings
+  (`not_refundable` otherwise), and staff correct theirs with an opposite posting. core's credits are final.
 - Write a `points_event` in the same transaction as every new customer and posting. The feed is served
   in `(xid, id)` order below the snapshot's `xmin`, so it never skips a late commit. Keep it that way
   rather than paging by id or time.

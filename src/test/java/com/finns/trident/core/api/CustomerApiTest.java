@@ -10,6 +10,8 @@ import io.restassured.response.ValidatableResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -187,8 +189,22 @@ class CustomerApiTest {
 				.body("transactions[0].reference", equalTo("TICKET-12"))
 				.body("transactions[0].staffId", equalTo(staff.id.intValue()))
 				.body("transactions[0].staffEmail", equalTo("staff@bla.com"))
+				.body("transactions[0].client", equalTo("staff"))
 				.body("transactions[1].staffId", nullValue())
-				.body("transactions[1].staffEmail", nullValue());
+				.body("transactions[1].staffEmail", nullValue())
+				.body("transactions[1].client", equalTo("partner"));
+	}
+
+	@Test
+	void detailShowsCoresOwnCredits() {
+		Customer customer = Fixtures.customerRow("sub-c");
+		QuarkusTransaction.requiringNew().run(() -> PointsTxn.earn(Customer.ofPublicId(customer.publicId).orElseThrow(),
+				10, PointsTxn.CHECK_IN_REASON, "qr-1", Instant.now(), ZoneId.of("Asia/Makassar")));
+
+		detail(customer).statusCode(200)
+				.body("transactions[0].client", equalTo("core"))
+				.body("transactions[0].reason", equalTo(PointsTxn.CHECK_IN_REASON))
+				.body("transactions[0].staffId", nullValue());
 	}
 
 	@Test
@@ -212,7 +228,7 @@ class CustomerApiTest {
 				.body("transactionId", notNullValue())
 				.body("kind", equalTo("credit")).body("points", equalTo(250)).body("balance", equalTo(250))
 				.body("reason", equalTo(PointsTxn.STAFF_REASON)).body("reference", nullValue())
-				.body("staffEmail", equalTo("staff@bla.com"));
+				.body("client", equalTo("staff")).body("staffEmail", equalTo("staff@bla.com"));
 		post(STAFF_SUB, "debits", customer, "k2", 50, "R-1").statusCode(201)
 				.body("kind", equalTo("debit")).body("points", equalTo(-50)).body("balance", equalTo(200));
 		detail(customer).body("balance", equalTo(200));

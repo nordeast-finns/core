@@ -78,15 +78,17 @@ public class CustomerApi {
 	}
 
 	/**
-	 * {@code points} is signed, from the customer's side, and {@code balance} is after it. {@code staffId}
-	 * is null for the Points API's postings; {@code staffEmail} also once that staff member is deleted.
+	 * {@code points} is signed, from the customer's side, and {@code balance} is after it. {@code client}
+	 * is who posted it: {@code partner}, {@code staff} or {@code core}. {@code staffId} is null unless it's
+	 * {@code staff}; {@code staffEmail} also once that staff member is deleted.
 	 */
 	@RegisterForReflection
 	public record Transaction(UUID transactionId, String kind, long points, long balance, String reason,
-			String reference, UUID refundOf, Instant recordedAt, Long staffId, String staffEmail) {
-		static Transaction of(PointsTxn.Posted p, Long staffId, String staffEmail) {
+			String reference, UUID refundOf, Instant recordedAt, String client, Long staffId, String staffEmail) {
+		static Transaction of(PointsTxn.Posted p, PointsTxn.Client client, Long staffId, String staffEmail) {
 			return new Transaction(p.id(), p.kind().name().toLowerCase(Locale.ROOT), p.points(), p.balance(),
-					p.reason(), p.reference(), p.refundOf(), p.recordedAt(), staffId, staffEmail);
+					p.reason(), p.reference(), p.refundOf(), p.recordedAt(), client.name().toLowerCase(Locale.ROOT),
+					staffId, staffEmail);
 		}
 	}
 
@@ -116,7 +118,7 @@ public class CustomerApi {
 		Customer customer = find(customerId);
 		Optional<PointsAccount> account = PointsAccount.ofCustomer(customer.id);
 		List<Transaction> transactions = PointsTxn.history(customer, HISTORY_LIMIT).stream()
-				.map(l -> Transaction.of(l.posted(), l.staffId(), l.staffEmail()))
+				.map(l -> Transaction.of(l.posted(), l.client(), l.staffId(), l.staffEmail()))
 				.toList();
 		return PointsApi.noStore(Response.ok(new Detail(customer.publicId, customer.displayName, customer.email,
 				customer.keycloakDeletedAt, account.map(a -> a.balance).orElse(0L), account.map(a -> a.seq).orElse(0L),
@@ -159,7 +161,7 @@ public class CustomerApi {
 					posted.kind(), posted.customerId(), posted.points(), actor.id);
 		}
 		Response.ResponseBuilder r = Response.status(Response.Status.CREATED)
-				.entity(Transaction.of(posted, actor.id, actor.email));
+				.entity(Transaction.of(posted, PointsTxn.Client.STAFF, actor.id, actor.email));
 		if (posted.replayed()) r.header("Idempotent-Replayed", "true");
 		return PointsApi.noStore(r);
 	}

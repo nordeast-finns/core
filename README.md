@@ -75,7 +75,7 @@ wording.
 | `DELETE /api/v1/admin/staff/{id}/link` | Unlink the JumpCloud subject (`If-Match`). |
 | `DELETE /api/v1/admin/staff/{id}` | Delete (`If-Match`). The events are kept. |
 | `GET /api/v1/admin/customers` | Customers with their points, newest first: `{items: [{customerId, displayName, email, deletedAt, balance, createdAt}], total, page, size}`. `customerId` is the public id; `displayName` and `email` are core's copy of the Keycloak account (see [Keycloak sync](#keycloak-sync)), null if it has none; `deletedAt` is when core found the account deleted, else null; `balance` is 0 before any posting. `q` is a whole customer id (that customer) or text to find in display names and emails, ignoring case. `page` (1-based), `size` (≤ 200). Any active staff member. |
-| `GET /api/v1/admin/customers/{customerId}` | `{customerId, displayName, email, deletedAt, balance, seq, createdAt, transactions}`: the latest 100 transactions, newest first, each like the Points API's (without `customerId` and `seq`) plus `staffId` and `staffEmail` (null for the Points API's; `staffEmail` also once the staff member is deleted). Any active staff member. |
+| `GET /api/v1/admin/customers/{customerId}` | `{customerId, displayName, email, deletedAt, balance, seq, createdAt, transactions}`: the latest 100 transactions, newest first, each like the Points API's (without `customerId` and `seq`) plus `client` (who posted it: `partner`, `staff` or `core`), `staffId` and `staffEmail` (null unless `client` is `staff`; `staffEmail` also once the staff member is deleted). Any active staff member. |
 | `POST /api/v1/admin/customers/{customerId}/credits` | Staff adjustment: `{points, reference?}` with `Idempotency-Key` → `201` transaction. Any active staff member; see [Points](#points). |
 | `POST /api/v1/admin/customers/{customerId}/debits` | Same, or `409 insufficient_points`. |
 
@@ -99,7 +99,8 @@ paths (401, empty body), checked before routing. Core accepts only access tokens
 
 Every customer is also a points member (see [Points](#points)): there's no separate enrolment.
 Points partners know a customer only by `customer.public_id`, a random UUID, never the internal id
-or the Keycloak subject.
+or the Keycloak subject. The app reads the customer's own balance with `GET /api/v1/app/points` →
+`200 {balance}` (0 before any posting, `Cache-Control: no-store`).
 
 Keycloak isn't needed to start: if it's unreachable, core starts anyway and connects on the first
 customer request (which fails until Keycloak is back).
@@ -167,6 +168,7 @@ and the website never receives an access token.
 | `POST /api/v1/app/logout` | `Bearer <customer access token>` | The customer signed out of the app: `204`. |
 | `POST /api/v1/booking/handoffs/peek` | `Bearer <FINNS_BOOKING_API_TOKEN>` | `{code}` → `200 {displayName, email}` without using the code, for the website's confirmation page. |
 | `POST /api/v1/booking/handoffs/redeem` | `Bearer <FINNS_BOOKING_API_TOKEN>` | `{code}` → `200 {sub, sid, displayName, email}`, once. |
+| `POST /api/v1/booking/bookings` | `Bearer <FINNS_BOOKING_API_TOKEN>` | A paid booking, `{sub, bookingId, totalIdr}` → `204`; core credits the customer (see [Earning](#earning)). `sub` is the Keycloak subject the website signed the customer in with, `bookingId` `[A-Za-z0-9_-]{1,64}`, `totalIdr` a whole number of rupiah ≥ 0, worth at most 1,000,000,000 points (a posting's limit). A repeat of a `bookingId` changes nothing. Field errors are `422 invalid` with `fields`. |
 
 ## Check-in (proof of concept)
 
@@ -179,6 +181,7 @@ separate Android app) scans it and asks core whether to open.
   before it expires.
 - Every scan is recorded in `check_in`, with the customer whose QR code it was (none if the QR code
   is unknown or malformed).
+- A granted scan credits the customer in the same transaction (see [Earning](#earning)).
 - **There are no per-gate rules yet:** any customer's valid QR code opens any gate. Nothing that
   controls a real door may rely on this until they exist.
 
@@ -208,9 +211,13 @@ curl -s localhost:8080/api/v1/gate/check-ins -H 'Content-Type: application/json'
 The membership program is split between core and a points partner, Sota Platforms. **core decides
 the "who"**: it keeps the member list (every customer) and each one's points, and is their system of
 record. **Sota decides the "how"**: raffles, rewards, redemptions and campaigns, adding and deducting
-points through the Points API. Sota keeps the record of its own draws, entries and prizes. core
-never posts points on its own; besides Sota, only staff adjust a balance, by hand in the Admin Console
-(see [Staff adjustments](#staff-adjustments)). There are no tiers, expiry or holds.
+points through the Points API. Sota keeps the record of its own draws, entries and prizes. Besides
+Sota, staff adjust balances by hand in the Admin Console (see [Staff adjustments](#staff-adjustments)),
+and core credits customers for two things they do at FINNS (see [Earning](#earning)). There are no
+tiers, expiry or holds.
+
+Each posting records its **client**, the one who posted it (`points_txn.client`): `PARTNER` (Sota,
+through the Points API), `STAFF` or `CORE`.
 
 **Ledger.** Double-entry, in whole points (`bigint`). Each transaction (`points_txn`: `CREDIT`,
 `DEBIT` or `REFUND`) has two entries (`points_entry`) that sum to zero: one on the customer's account
@@ -229,7 +236,7 @@ accounts' would queue every posting on one row. A **daily check** (`PointsCheck`
 sum to zero, logging `points.check_failed` at ERROR on any mismatch. One instance runs it, under an
 advisory lock.
 
-**Posting** (`PointsTxn.post`/`postByStaff`/`refund`, the only writers) is one Postgres transaction: claim the
+**Posting** (`PointsTxn.post`/`postByStaff`/`earn`/`refund`, the only writers) is one Postgres transaction: claim the
 idempotency key (`insert ... on conflict do nothing`, which waits for a concurrent request with the
 same key), move the balance with one conditional update (`balance + delta >= 0`, which is also the
 customer's lock, so one customer's postings queue and different customers' don't wait for each
@@ -237,14 +244,25 @@ other), insert the entries, append a feed event. A failure rolls everything back
 so only successful postings replay.
 
 **Refunds** reverse a credit or debit in full, once. A refund of a credit whose points were spent
-fails with `insufficient_points`. A refund can't be refunded; correct it with a new posting. Neither
-can a staff adjustment (`not_refundable`): staff correct theirs with an opposite adjustment.
+fails with `insufficient_points`. A refund can't be refunded; correct it with a new posting. Only
+Sota's own postings can be refunded: a staff adjustment or core's credit is `not_refundable`. Staff
+correct theirs with an opposite adjustment.
 
 **Staff adjustments.** Any active staff member can credit or debit a customer in the Admin Console
 (`POST /api/v1/admin/customers/{customerId}/credits|debits`). They're ordinary postings with the same
 checks, recorded with the staff member (`points_txn.staff_id`) and the reason `staff_adjustment`, so
 Sota sees them in the feed and the reconciliation like its own. Idempotency keys are scoped per client
-(Sota's, and each staff member's), so one can't replay or block another's posting.
+(Sota's, core's, and each staff member's), so one can't replay or block another's posting.
+
+**Earning.** core credits a customer itself (`PointsTxn.earn`, client `CORE`) for exactly two things:
+
+| Reason | When | Points | Reference |
+|---|---|---|---|
+| `booking` | The booking website reports a paid booking (`POST /api/v1/booking/bookings`) | 1 per `finns.points.earn.booking-idr-per-point` (IDR 10,000) of its total, rounded down; none under that | The booking's id |
+| `check_in` | A gate's scan is granted, in the same transaction | `finns.points.earn.check-in` (10) per check-in; 0 turns it off | The QR code's id |
+
+Each is credited at most once per reference (core's idempotency key is `<reason>:<reference>`), and Sota
+sees them in the feed and the reconciliation like staff adjustments.
 
 **Feed.** `points_event` lists new customers (`customer.created`, written by `Customer.ofSubject`) and
 postings (`points.posted`), in the transaction that made them. It's served in `(xid, id)` order (`xid`
